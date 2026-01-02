@@ -50,34 +50,34 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    let audioBuffer: Buffer
+    let audioArrayBuffer: ArrayBuffer
 
     if (audioFile) {
-      const arrayBuffer = await audioFile.arrayBuffer()
-      audioBuffer = Buffer.from(arrayBuffer)
+      audioArrayBuffer = await audioFile.arrayBuffer()
     } else if (audioUrl) {
       const response = await fetch(audioUrl)
       if (!response.ok) {
         return NextResponse.json({ error: 'Failed to fetch audio from URL' }, { status: 400 })
       }
-      const arrayBuffer = await response.arrayBuffer()
-      audioBuffer = Buffer.from(arrayBuffer)
+      audioArrayBuffer = await response.arrayBuffer()
     } else {
       return NextResponse.json({ error: 'No audio provided' }, { status: 400 })
     }
 
+    // Create a proper File object from ArrayBuffer
+    const audioBlob = new Blob([audioArrayBuffer], { type: 'audio/mpeg' })
+    const audioFileForWhisper = new File([audioBlob], 'audio.mp3', { type: 'audio/mpeg' })
+
     // Transcribe with Whisper
     const transcription = await openai.audio.transcriptions.create({
-      file: new File([audioBuffer], 'audio.mp3', { type: 'audio/mpeg' }),
+      file: audioFileForWhisper,
       model: 'whisper-1',
       response_format: 'verbose_json',
       timestamp_granularities: ['segment']
     })
 
     const fullText = transcription.text
-    const segments = transcription.segments || []
-
-    const chapters = structureIntoChapters(fullText, segments)
+    const chapters = structureIntoChapters(fullText)
 
     let fileBuffer: Buffer
     let contentType: string
@@ -172,7 +172,7 @@ interface Chapter {
   content: string
 }
 
-function structureIntoChapters(text: string, segments: any[]): Chapter[] {
+function structureIntoChapters(text: string): Chapter[] {
   const chapters: Chapter[] = []
   const WORDS_PER_CHAPTER = 1500
 
@@ -242,20 +242,16 @@ function createDocxDocument(title: string, chapters: Chapter[]): Document {
 
 function createMarkdown(title: string, chapters: Chapter[]): string {
   let md = `# ${title}\n\n*Transcribed with Javari Books*\n\n---\n\n`
-  
   chapters.forEach(chapter => {
     md += `## ${chapter.title}\n\n${chapter.content}\n\n`
   })
-  
   return md
 }
 
 function createPlainText(title: string, chapters: Chapter[]): string {
   let text = `${title}\n${'='.repeat(title.length)}\n\nTranscribed with Javari Books\n\n`
-  
   chapters.forEach(chapter => {
     text += `${chapter.title}\n${'-'.repeat(chapter.title.length)}\n\n${chapter.content}\n\n`
   })
-  
   return text
 }
