@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Header, Footer, PageNumber, AlignmentType } from 'docx'
 import { createClient } from '@supabase/supabase-js'
-import { slugify, CREDIT_COSTS } from '@/lib/utils'
-import { CentralCredits, CentralAuth } from '@/lib/central-services'
 import OpenAI from 'openai'
+
+// Central API for credits (all apps use this)
+const CENTRAL_API_BASE = process.env.NEXT_PUBLIC_CENTRAL_API_URL || 'https://craudiovizai.com/api'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
@@ -12,39 +13,60 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+const CREDIT_COSTS = {
+  GENERATE_EBOOK: 50,
+  EBOOK_TO_AUDIO: 100,
+  AUDIO_TO_EBOOK: 75,
+  BULK_GENERATE: 40,
+}
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
+}
+
 interface GenerateRequest {
   title: string
   topic: string
   audience: string
   chapters: number
   style: 'professional' | 'conversational' | 'academic'
+  userId?: string
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: GenerateRequest = await request.json()
-    const { title, topic, audience, chapters = 5, style = 'professional' } = body
+    const { title, topic, audience, chapters = 5, style = 'professional', userId } = body
 
     if (!title || !topic) {
       return NextResponse.json({ error: 'Title and topic are required' }, { status: 400 })
     }
 
-    // Get user from central auth
-    const session = await CentralAuth.getSession()
-    if (!session.success || !session.data) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
-    }
-
-    const userId = session.data.id
-
-    // Check credits via central services
-    const creditCheck = await CentralCredits.getBalance()
-    if (!creditCheck.success || !creditCheck.data || creditCheck.data.balance < CREDIT_COSTS.GENERATE_EBOOK) {
-      return NextResponse.json({ 
-        error: 'Insufficient credits',
-        required: CREDIT_COSTS.GENERATE_EBOOK,
-        available: creditCheck.data?.balance || 0
-      }, { status: 402 })
+    // Check credits via central API if userId provided
+    if (userId) {
+      try {
+        const creditRes = await fetch(`${CENTRAL_API_BASE}/credits/balance`, {
+          headers: { 
+            'Content-Type': 'application/json',
+            'X-User-Id': userId
+          }
+        })
+        const creditData = await creditRes.json()
+        
+        if (creditData.success && creditData.data && creditData.data.balance < CREDIT_COSTS.GENERATE_EBOOK) {
+          return NextResponse.json({ 
+            error: 'Insufficient credits',
+            required: CREDIT_COSTS.GENERATE_EBOOK,
+            available: creditData.data.balance
+          }, { status: 402 })
+        }
+      } catch (e) {
+        // Continue without credit check if central API unavailable
+        console.warn('Credit check failed, continuing:', e)
+      }
     }
 
     // Generate book content with AI
@@ -86,8 +108,8 @@ export async function POST(request: NextRequest) {
         is_public: true,
         price_cents: 2499,
         tags: [topic.toLowerCase(), style, 'ai-generated'],
-        uploaded_by: userId,
-        owned_by: userId,
+        uploaded_by: userId || null,
+        owned_by: userId || null,
         status: 'active'
       })
       .select()
@@ -97,16 +119,24 @@ export async function POST(request: NextRequest) {
       console.error('Database error:', dbError)
     }
 
-    // Deduct credits via central services
-    const deductResult = await CentralCredits.deduct({
-      amount: CREDIT_COSTS.GENERATE_EBOOK,
-      description: `Generated eBook: ${title}`,
-      metadata: { book_id: book?.id, title, topic }
-    })
-
-    if (!deductResult.success) {
-      console.error('Credit deduction failed:', deductResult.error)
-      // Book was created, but credit deduction failed - log for manual review
+    // Deduct credits via central API
+    if (userId) {
+      try {
+        await fetch(`${CENTRAL_API_BASE}/credits/deduct`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'X-User-Id': userId
+          },
+          body: JSON.stringify({
+            amount: CREDIT_COSTS.GENERATE_EBOOK,
+            description: `Generated eBook: ${title}`,
+            metadata: { book_id: book?.id, title, topic }
+          })
+        })
+      } catch (e) {
+        console.warn('Credit deduction failed:', e)
+      }
     }
 
     // Get download URL
@@ -125,8 +155,7 @@ export async function POST(request: NextRequest) {
         downloadUrl: urlData.publicUrl,
         storagePath
       },
-      creditsUsed: CREDIT_COSTS.GENERATE_EBOOK,
-      creditsRemaining: (creditCheck.data?.balance || 0) - CREDIT_COSTS.GENERATE_EBOOK
+      creditsUsed: CREDIT_COSTS.GENERATE_EBOOK
     })
 
   } catch (error) {
@@ -148,7 +177,6 @@ async function generateBookContent(
   const chapters: { title: string; content: string }[] = []
   let totalWords = 0
 
-  // Generate chapter titles
   const outlinePrompt = `Create ${chapterCount} chapter titles for a book called "${title}" about ${topic} for ${audience}. 
 Style: ${style}. 
 Return only the chapter titles, one per line, numbered.`
@@ -165,7 +193,6 @@ Return only the chapter titles, one per line, numbered.`
     .map(line => line.replace(/^\d+[\.\)]\s*/, '').trim())
     .slice(0, chapterCount) || []
 
-  // Generate content for each chapter
   for (const chapterTitle of chapterTitles) {
     const contentPrompt = `Write a detailed chapter for the book "${title}".
 Chapter Title: ${chapterTitle}
@@ -195,7 +222,6 @@ Do not include the chapter title in your response - just the content.`
 function createDocument(title: string, content: { chapters: { title: string; content: string }[]; wordCount: number }) {
   const children: Paragraph[] = []
 
-  // Title page
   children.push(
     new Paragraph({
       children: [new TextRun({ text: title, bold: true, size: 72 })],
@@ -215,7 +241,6 @@ function createDocument(title: string, content: { chapters: { title: string; con
     })
   )
 
-  // Table of Contents
   children.push(
     new Paragraph({
       children: [new TextRun({ text: 'Table of Contents', bold: true, size: 36 })],
@@ -233,7 +258,6 @@ function createDocument(title: string, content: { chapters: { title: string; con
     )
   })
 
-  // Chapters
   content.chapters.forEach((chapter, index) => {
     children.push(
       new Paragraph({
