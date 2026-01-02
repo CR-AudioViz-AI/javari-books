@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Header, Footer, PageNumber, AlignmentType } from 'docx'
-import { supabaseAdmin } from '@/lib/supabase'
+import { createClient } from '@supabase/supabase-js'
 import { slugify, CREDIT_COSTS } from '@/lib/utils'
+import { CentralCredits, CentralAuth } from '@/lib/central-services'
 import OpenAI from 'openai'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
 
 interface GenerateRequest {
   title: string
@@ -12,33 +18,33 @@ interface GenerateRequest {
   audience: string
   chapters: number
   style: 'professional' | 'conversational' | 'academic'
-  userId?: string
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: GenerateRequest = await request.json()
-    const { title, topic, audience, chapters = 5, style = 'professional', userId } = body
+    const { title, topic, audience, chapters = 5, style = 'professional' } = body
 
     if (!title || !topic) {
       return NextResponse.json({ error: 'Title and topic are required' }, { status: 400 })
     }
 
-    // Check credits if user provided
-    if (userId) {
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('credits')
-        .eq('id', userId)
-        .single()
+    // Get user from central auth
+    const session = await CentralAuth.getSession()
+    if (!session.success || !session.data) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
+    }
 
-      if (!profile || profile.credits < CREDIT_COSTS.GENERATE_EBOOK) {
-        return NextResponse.json({ 
-          error: 'Insufficient credits',
-          required: CREDIT_COSTS.GENERATE_EBOOK,
-          available: profile?.credits || 0
-        }, { status: 402 })
-      }
+    const userId = session.data.id
+
+    // Check credits via central services
+    const creditCheck = await CentralCredits.getBalance()
+    if (!creditCheck.success || !creditCheck.data || creditCheck.data.balance < CREDIT_COSTS.GENERATE_EBOOK) {
+      return NextResponse.json({ 
+        error: 'Insufficient credits',
+        required: CREDIT_COSTS.GENERATE_EBOOK,
+        available: creditCheck.data?.balance || 0
+      }, { status: 402 })
     }
 
     // Generate book content with AI
@@ -50,7 +56,7 @@ export async function POST(request: NextRequest) {
 
     // Generate slug and paths
     const slug = slugify(title)
-    const storagePath = `ebooks/generated/${slug}.docx`
+    const storagePath = `ebooks/generated/${slug}-${Date.now()}.docx`
 
     // Upload to Supabase Storage
     const { error: uploadError } = await supabaseAdmin.storage
@@ -74,17 +80,15 @@ export async function POST(request: NextRequest) {
         description: `AI-generated book about ${topic} for ${audience}`,
         category_id: process.env.EBOOKS_CATEGORY_ID,
         storage_path: storagePath,
-        file_type: 'docx',
-        is_premium: true,
+        file_extension: 'docx',
+        mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        is_free: false,
+        is_public: true,
         price_cents: 2499,
         tags: [topic.toLowerCase(), style, 'ai-generated'],
-        metadata: {
-          chapters: bookContent.chapters.length,
-          word_count: bookContent.wordCount,
-          audience,
-          style,
-          generated_at: new Date().toISOString()
-        }
+        uploaded_by: userId,
+        owned_by: userId,
+        status: 'active'
       })
       .select()
       .single()
@@ -93,12 +97,16 @@ export async function POST(request: NextRequest) {
       console.error('Database error:', dbError)
     }
 
-    // Deduct credits
-    if (userId) {
-      await supabaseAdmin.rpc('decrement_credits', {
-        user_id: userId,
-        amount: CREDIT_COSTS.GENERATE_EBOOK
-      })
+    // Deduct credits via central services
+    const deductResult = await CentralCredits.deduct({
+      amount: CREDIT_COSTS.GENERATE_EBOOK,
+      description: `Generated eBook: ${title}`,
+      metadata: { book_id: book?.id, title, topic }
+    })
+
+    if (!deductResult.success) {
+      console.error('Credit deduction failed:', deductResult.error)
+      // Book was created, but credit deduction failed - log for manual review
     }
 
     // Get download URL
@@ -117,7 +125,8 @@ export async function POST(request: NextRequest) {
         downloadUrl: urlData.publicUrl,
         storagePath
       },
-      creditsUsed: CREDIT_COSTS.GENERATE_EBOOK
+      creditsUsed: CREDIT_COSTS.GENERATE_EBOOK,
+      creditsRemaining: (creditCheck.data?.balance || 0) - CREDIT_COSTS.GENERATE_EBOOK
     })
 
   } catch (error) {
