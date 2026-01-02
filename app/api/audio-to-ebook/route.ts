@@ -2,16 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx'
 import { supabaseAdmin } from '@/lib/supabase'
 import { slugify, CREDIT_COSTS } from '@/lib/utils'
-import OpenAI from 'openai'
+import OpenAI, { toFile } from 'openai'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-
-interface TranscribeRequest {
-  audioUrl?: string
-  userId?: string
-  title?: string
-  format?: 'docx' | 'txt' | 'md'
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -43,37 +36,34 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    let audioBuffer: Buffer
+    let audioBlob: Blob
 
     if (audioFile) {
-      // Convert File to Buffer
-      const arrayBuffer = await audioFile.arrayBuffer()
-      audioBuffer = Buffer.from(arrayBuffer)
+      audioBlob = audioFile
     } else if (audioUrl) {
-      // Download from URL
       const response = await fetch(audioUrl)
       if (!response.ok) {
         return NextResponse.json({ error: 'Failed to fetch audio from URL' }, { status: 400 })
       }
-      const arrayBuffer = await response.arrayBuffer()
-      audioBuffer = Buffer.from(arrayBuffer)
+      audioBlob = await response.blob()
     } else {
       return NextResponse.json({ error: 'No audio provided' }, { status: 400 })
     }
 
+    // Convert to File for OpenAI
+    const file = await toFile(audioBlob, 'audio.mp3', { type: 'audio/mpeg' })
+
     // Transcribe with Whisper
     const transcription = await openai.audio.transcriptions.create({
-      file: new File([audioBuffer], 'audio.mp3', { type: 'audio/mpeg' }),
+      file,
       model: 'whisper-1',
-      response_format: 'verbose_json',
-      timestamp_granularities: ['segment']
+      response_format: 'text'
     })
 
-    const fullText = transcription.text
-    const segments = transcription.segments || []
+    const fullText = transcription
 
-    // Structure the transcription into chapters (every ~5 minutes = 1 chapter)
-    const chapters = structureIntoChapters(fullText, segments)
+    // Structure the transcription into chapters
+    const chapters = structureIntoChapters(fullText)
 
     // Generate the document
     let fileBuffer: Buffer
@@ -82,7 +72,7 @@ export async function POST(request: NextRequest) {
 
     if (format === 'docx') {
       const doc = createDocxDocument(title, chapters)
-      fileBuffer = await Packer.toBuffer(doc)
+      fileBuffer = await Packer.toBuffer(doc) as Buffer
       contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
       fileExtension = 'docx'
     } else if (format === 'md') {
@@ -129,14 +119,12 @@ export async function POST(request: NextRequest) {
         }
       })
 
-      // Deduct credits
       await supabaseAdmin.rpc('decrement_credits', {
         user_id: userId,
         amount: CREDIT_COSTS.AUDIO_TO_EBOOK
       })
     }
 
-    // Get download URL
     const { data: urlData } = supabaseAdmin.storage
       .from('assets')
       .getPublicUrl(storagePath)
@@ -177,9 +165,9 @@ interface Chapter {
   content: string
 }
 
-function structureIntoChapters(text: string, segments: any[]): Chapter[] {
+function structureIntoChapters(text: string): Chapter[] {
   const chapters: Chapter[] = []
-  const WORDS_PER_CHAPTER = 1500 // Roughly 5-7 minutes of audio
+  const WORDS_PER_CHAPTER = 1500
 
   const words = text.split(/\s+/)
   const totalChapters = Math.max(1, Math.ceil(words.length / WORDS_PER_CHAPTER))
@@ -201,7 +189,6 @@ function structureIntoChapters(text: string, segments: any[]): Chapter[] {
 function createDocxDocument(title: string, chapters: Chapter[]): Document {
   const children: Paragraph[] = []
 
-  // Title
   children.push(
     new Paragraph({
       children: [new TextRun({ text: title, bold: true, size: 72 })],
@@ -216,7 +203,6 @@ function createDocxDocument(title: string, chapters: Chapter[]): Document {
     })
   )
 
-  // Chapters
   chapters.forEach((chapter, index) => {
     children.push(
       new Paragraph({
@@ -249,20 +235,16 @@ function createDocxDocument(title: string, chapters: Chapter[]): Document {
 
 function createMarkdown(title: string, chapters: Chapter[]): string {
   let md = `# ${title}\n\n*Transcribed with Javari Books*\n\n---\n\n`
-  
   chapters.forEach(chapter => {
     md += `## ${chapter.title}\n\n${chapter.content}\n\n`
   })
-  
   return md
 }
 
 function createPlainText(title: string, chapters: Chapter[]): string {
   let text = `${title}\n${'='.repeat(title.length)}\n\nTranscribed with Javari Books\n\n`
-  
   chapters.forEach(chapter => {
     text += `${chapter.title}\n${'-'.repeat(chapter.title.length)}\n\n${chapter.content}\n\n`
   })
-  
   return text
 }
