@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabaseAdmin } from '@/lib/supabase'
-import { CREDIT_COSTS } from '@/lib/utils'
+import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 
+const CENTRAL_API_BASE = process.env.NEXT_PUBLIC_CENTRAL_API_URL || 'https://craudiovizai.com/api'
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
+
+const CREDIT_COST = 100
 
 const VOICES = {
   alloy: 'Alloy - Neutral',
@@ -33,27 +40,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Provide bookId or text' }, { status: 400 })
     }
 
-    // Check credits
+    // Check credits via central API
     if (userId) {
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('credits')
-        .eq('id', userId)
-        .single()
-
-      if (!profile || profile.credits < CREDIT_COSTS.EBOOK_TO_AUDIO) {
-        return NextResponse.json({ 
-          error: 'Insufficient credits',
-          required: CREDIT_COSTS.EBOOK_TO_AUDIO,
-          available: profile?.credits || 0
-        }, { status: 402 })
+      try {
+        const creditRes = await fetch(`${CENTRAL_API_BASE}/credits/balance`, {
+          headers: { 'Content-Type': 'application/json', 'X-User-Id': userId }
+        })
+        const creditData = await creditRes.json()
+        
+        if (creditData.success && creditData.data && creditData.data.balance < CREDIT_COST) {
+          return NextResponse.json({ 
+            error: 'Insufficient credits',
+            required: CREDIT_COST,
+            available: creditData.data.balance
+          }, { status: 402 })
+        }
+      } catch (e) {
+        console.warn('Credit check failed:', e)
       }
     }
 
     let textContent = text
     let bookTitle = title || 'Untitled'
 
-    // If bookId provided, fetch the book content
     if (bookId) {
       const { data: book } = await supabaseAdmin
         .from('assets')
@@ -66,17 +75,7 @@ export async function POST(request: NextRequest) {
       }
 
       bookTitle = book.name
-
-      // Download the book file
-      const { data: fileData } = await supabaseAdmin.storage
-        .from('assets')
-        .download(book.storage_path)
-
-      if (fileData) {
-        // For DOCX, we'd need to parse it - for now, use provided text
-        // In production, use mammoth or similar to extract text from DOCX
-        textContent = text || `Content of ${book.name}`
-      }
+      textContent = text || `Content of ${book.name}`
     }
 
     if (!textContent) {
@@ -87,7 +86,6 @@ export async function POST(request: NextRequest) {
     const chunks = splitIntoChunks(textContent, 4000)
     const audioBuffers: Buffer[] = []
 
-    // Convert each chunk to audio
     for (const chunk of chunks) {
       const mp3Response = await openai.audio.speech.create({
         model: 'tts-1',
@@ -99,14 +97,11 @@ export async function POST(request: NextRequest) {
       audioBuffers.push(buffer)
     }
 
-    // Combine all audio buffers
     const combinedAudio = Buffer.concat(audioBuffers)
 
-    // Generate storage path
     const slug = bookTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')
     const audioPath = `audiobooks/${slug}-${Date.now()}.mp3`
 
-    // Upload to Supabase
     const { error: uploadError } = await supabaseAdmin.storage
       .from('assets')
       .upload(audioPath, combinedAudio, {
@@ -119,27 +114,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to upload audio' }, { status: 500 })
     }
 
-    // Track conversion
-    if (userId && bookId) {
-      await supabaseAdmin.from('conversion_jobs').insert({
-        user_id: userId,
-        asset_id: bookId,
-        conversion_type: 'ebook_to_audio',
-        status: 'completed',
-        output_path: audioPath,
-        credits_used: CREDIT_COSTS.EBOOK_TO_AUDIO
-      })
-    }
-
     // Deduct credits
     if (userId) {
-      await supabaseAdmin.rpc('decrement_credits', {
-        user_id: userId,
-        amount: CREDIT_COSTS.EBOOK_TO_AUDIO
-      })
+      try {
+        await fetch(`${CENTRAL_API_BASE}/credits/deduct`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-User-Id': userId },
+          body: JSON.stringify({
+            amount: CREDIT_COST,
+            description: `Converted to audiobook: ${bookTitle}`,
+            metadata: { bookId, title: bookTitle }
+          })
+        })
+      } catch (e) {
+        console.warn('Credit deduction failed:', e)
+      }
     }
 
-    // Get download URL
     const { data: urlData } = supabaseAdmin.storage
       .from('assets')
       .getPublicUrl(audioPath)
@@ -154,7 +145,7 @@ export async function POST(request: NextRequest) {
         storagePath: audioPath,
         chunks: chunks.length
       },
-      creditsUsed: CREDIT_COSTS.EBOOK_TO_AUDIO
+      creditsUsed: CREDIT_COST
     })
 
   } catch (error) {
@@ -169,7 +160,7 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   return NextResponse.json({
     voices: VOICES,
-    creditCost: CREDIT_COSTS.EBOOK_TO_AUDIO,
+    creditCost: CREDIT_COST,
     maxCharsPerChunk: 4000,
     supportedFormats: ['docx', 'txt', 'md']
   })
@@ -194,7 +185,6 @@ function splitIntoChunks(text: string, maxLength: number): string[] {
 }
 
 function estimateDuration(text: string): string {
-  // Average reading speed: 150 words per minute
   const words = text.split(/\s+/).length
   const minutes = Math.ceil(words / 150)
   const hours = Math.floor(minutes / 60)
