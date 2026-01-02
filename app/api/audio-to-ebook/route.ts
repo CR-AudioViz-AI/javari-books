@@ -1,10 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx'
-import { supabaseAdmin } from '@/lib/supabase'
-import { slugify, CREDIT_COSTS } from '@/lib/utils'
-import OpenAI, { toFile } from 'openai'
+import { createClient } from '@supabase/supabase-js'
+import OpenAI from 'openai'
 
+const CENTRAL_API_BASE = process.env.NEXT_PUBLIC_CENTRAL_API_URL || 'https://craudiovizai.com/api'
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
+
+const CREDIT_COST = 75
+
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,58 +32,60 @@ export async function POST(request: NextRequest) {
 
     // Check credits
     if (userId) {
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('credits')
-        .eq('id', userId)
-        .single()
-
-      if (!profile || profile.credits < CREDIT_COSTS.AUDIO_TO_EBOOK) {
-        return NextResponse.json({ 
-          error: 'Insufficient credits',
-          required: CREDIT_COSTS.AUDIO_TO_EBOOK,
-          available: profile?.credits || 0
-        }, { status: 402 })
+      try {
+        const creditRes = await fetch(`${CENTRAL_API_BASE}/credits/balance`, {
+          headers: { 'Content-Type': 'application/json', 'X-User-Id': userId }
+        })
+        const creditData = await creditRes.json()
+        
+        if (creditData.success && creditData.data && creditData.data.balance < CREDIT_COST) {
+          return NextResponse.json({ 
+            error: 'Insufficient credits',
+            required: CREDIT_COST,
+            available: creditData.data.balance
+          }, { status: 402 })
+        }
+      } catch (e) {
+        console.warn('Credit check failed:', e)
       }
     }
 
-    let audioBlob: Blob
+    let audioBuffer: Buffer
 
     if (audioFile) {
-      audioBlob = audioFile
+      const arrayBuffer = await audioFile.arrayBuffer()
+      audioBuffer = Buffer.from(arrayBuffer)
     } else if (audioUrl) {
       const response = await fetch(audioUrl)
       if (!response.ok) {
         return NextResponse.json({ error: 'Failed to fetch audio from URL' }, { status: 400 })
       }
-      audioBlob = await response.blob()
+      const arrayBuffer = await response.arrayBuffer()
+      audioBuffer = Buffer.from(arrayBuffer)
     } else {
       return NextResponse.json({ error: 'No audio provided' }, { status: 400 })
     }
 
-    // Convert to File for OpenAI
-    const file = await toFile(audioBlob, 'audio.mp3', { type: 'audio/mpeg' })
-
     // Transcribe with Whisper
     const transcription = await openai.audio.transcriptions.create({
-      file,
+      file: new File([audioBuffer], 'audio.mp3', { type: 'audio/mpeg' }),
       model: 'whisper-1',
-      response_format: 'text'
+      response_format: 'verbose_json',
+      timestamp_granularities: ['segment']
     })
 
-    const fullText = transcription
+    const fullText = transcription.text
+    const segments = transcription.segments || []
 
-    // Structure the transcription into chapters
-    const chapters = structureIntoChapters(fullText)
+    const chapters = structureIntoChapters(fullText, segments)
 
-    // Generate the document
     let fileBuffer: Buffer
     let contentType: string
     let fileExtension: string
 
     if (format === 'docx') {
       const doc = createDocxDocument(title, chapters)
-      fileBuffer = await Packer.toBuffer(doc) as Buffer
+      fileBuffer = await Packer.toBuffer(doc)
       contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
       fileExtension = 'docx'
     } else if (format === 'md') {
@@ -87,7 +100,6 @@ export async function POST(request: NextRequest) {
       fileExtension = 'txt'
     }
 
-    // Upload to storage
     const slug = slugify(title)
     const storagePath = `ebooks/transcribed/${slug}-${Date.now()}.${fileExtension}`
 
@@ -103,26 +115,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to upload book' }, { status: 500 })
     }
 
-    // Track conversion
+    // Deduct credits
     if (userId) {
-      await supabaseAdmin.from('conversion_jobs').insert({
-        user_id: userId,
-        conversion_type: 'audio_to_ebook',
-        status: 'completed',
-        output_path: storagePath,
-        credits_used: CREDIT_COSTS.AUDIO_TO_EBOOK,
-        metadata: {
-          title,
-          format,
-          chapters: chapters.length,
-          wordCount: fullText.split(/\s+/).length
-        }
-      })
-
-      await supabaseAdmin.rpc('decrement_credits', {
-        user_id: userId,
-        amount: CREDIT_COSTS.AUDIO_TO_EBOOK
-      })
+      try {
+        await fetch(`${CENTRAL_API_BASE}/credits/deduct`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-User-Id': userId },
+          body: JSON.stringify({
+            amount: CREDIT_COST,
+            description: `Transcribed audio to eBook: ${title}`,
+            metadata: { title, format }
+          })
+        })
+      } catch (e) {
+        console.warn('Credit deduction failed:', e)
+      }
     }
 
     const { data: urlData } = supabaseAdmin.storage
@@ -139,7 +146,7 @@ export async function POST(request: NextRequest) {
         downloadUrl: urlData.publicUrl,
         storagePath
       },
-      creditsUsed: CREDIT_COSTS.AUDIO_TO_EBOOK
+      creditsUsed: CREDIT_COST
     })
 
   } catch (error) {
@@ -153,7 +160,7 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   return NextResponse.json({
-    creditCost: CREDIT_COSTS.AUDIO_TO_EBOOK,
+    creditCost: CREDIT_COST,
     supportedFormats: ['mp3', 'wav', 'm4a', 'webm', 'mp4'],
     outputFormats: ['docx', 'txt', 'md'],
     maxFileSize: '25MB'
@@ -165,7 +172,7 @@ interface Chapter {
   content: string
 }
 
-function structureIntoChapters(text: string): Chapter[] {
+function structureIntoChapters(text: string, segments: any[]): Chapter[] {
   const chapters: Chapter[] = []
   const WORDS_PER_CHAPTER = 1500
 
@@ -235,16 +242,20 @@ function createDocxDocument(title: string, chapters: Chapter[]): Document {
 
 function createMarkdown(title: string, chapters: Chapter[]): string {
   let md = `# ${title}\n\n*Transcribed with Javari Books*\n\n---\n\n`
+  
   chapters.forEach(chapter => {
     md += `## ${chapter.title}\n\n${chapter.content}\n\n`
   })
+  
   return md
 }
 
 function createPlainText(title: string, chapters: Chapter[]): string {
   let text = `${title}\n${'='.repeat(title.length)}\n\nTranscribed with Javari Books\n\n`
+  
   chapters.forEach(chapter => {
     text += `${chapter.title}\n${'-'.repeat(chapter.title.length)}\n\n${chapter.content}\n\n`
   })
+  
   return text
 }
