@@ -3,6 +3,9 @@ import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } fro
 import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 
+// Enable 5-minute timeout for Pro plan
+export const maxDuration = 300
+
 const CENTRAL_API_BASE = process.env.NEXT_PUBLIC_CENTRAL_API_URL || 'https://craudiovizai.com/api'
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
@@ -255,3 +258,4 @@ function createPlainText(title: string, chapters: Chapter[]): string {
   })
   return text
 }
+
