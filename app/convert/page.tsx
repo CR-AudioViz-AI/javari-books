@@ -3,7 +3,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Headphones, FileAudio, Loader2, Download, Upload, CheckCircle, AlertCircle, LogIn, Coins } from 'lucide-react'
 import { toast } from 'sonner'
-import { CentralAuth, CentralCredits, CentralAnalytics, CentralActivity, CREDIT_COSTS } from '@/lib/central-services'
 
 type Mode = 'ebook-to-audio' | 'audio-to-ebook'
 type Voice = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer'
@@ -17,11 +16,9 @@ const VOICES: Record<Voice, string> = {
   shimmer: 'Shimmer - Soft Female'
 }
 
-interface User {
-  id: string
-  email: string
-  name?: string
-  credits: number
+const CREDIT_COSTS = {
+  EBOOK_TO_AUDIO: 100,
+  AUDIO_TO_EBOOK: 75
 }
 
 interface ConversionResult {
@@ -37,12 +34,10 @@ interface ConversionResult {
 export default function ConvertPage() {
   const [mode, setMode] = useState<Mode>('ebook-to-audio')
   const [loading, setLoading] = useState(false)
-  const [checkingAuth, setCheckingAuth] = useState(true)
-  const [user, setUser] = useState<User | null>(null)
-  const [creditBalance, setCreditBalance] = useState<number>(0)
   const [result, setResult] = useState<ConversionResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<string>('')
+  const [debugLog, setDebugLog] = useState<string[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // eBook to Audio state
@@ -54,89 +49,38 @@ export default function ConvertPage() {
   const [audioFile, setAudioFile] = useState<File | null>(null)
   const [outputFormat, setOutputFormat] = useState<'docx' | 'txt' | 'md'>('txt')
 
-  // Check auth and credits on mount
-  useEffect(() => {
-    checkAuth()
-    CentralAnalytics.pageView('/convert')
-  }, [])
-
-  const checkAuth = async () => {
-    setCheckingAuth(true)
-    try {
-      const sessionResult = await CentralAuth.getSession()
-      if (sessionResult.success && sessionResult.data) {
-        setUser(sessionResult.data)
-        
-        // Get credit balance
-        const creditResult = await CentralCredits.getBalance()
-        if (creditResult.success && creditResult.data) {
-          setCreditBalance(creditResult.data.balance)
-        }
-      }
-    } catch (err) {
-      console.error('Auth check failed:', err)
-    } finally {
-      setCheckingAuth(false)
-    }
-  }
-
-  const handleLogin = () => {
-    window.location.href = CentralAuth.getLoginUrl()
+  const addLog = (msg: string) => {
+    console.log(`[Convert] ${msg}`)
+    setDebugLog(prev => [...prev.slice(-10), `${new Date().toISOString()}: ${msg}`])
   }
 
   const handleEbookToAudio = async () => {
-    if (!user) {
-      toast.error('Please log in to convert')
-      handleLogin()
-      return
-    }
-
     if (!text) {
       toast.error('Please enter text to convert')
-      return
-    }
-
-    // Check credits
-    const creditCheck = await CentralCredits.hasEnough(CREDIT_COSTS.EBOOK_TO_AUDIO)
-    if (!creditCheck.hasEnough) {
-      toast.error(`Insufficient credits. Need ${CREDIT_COSTS.EBOOK_TO_AUDIO}, have ${creditCheck.balance}`)
       return
     }
 
     setLoading(true)
     setResult(null)
     setError(null)
+    setDebugLog([])
     
     const wordCount = text.split(/\s+/).length
     const chunks = Math.ceil(text.length / 4000)
     const estMinutes = Math.ceil(chunks * 15 / 60)
     setProgress(`Processing ${wordCount.toLocaleString()} words (~${estMinutes} min)...`)
     
+    addLog(`Starting conversion: ${wordCount} words, ${chunks} chunks`)
     toast.info(`Starting conversion. Est. ${estMinutes}-${estMinutes+2} minutes.`)
 
     try {
-      // Deduct credits first
-      const deductResult = await CentralCredits.deduct(
-        CREDIT_COSTS.EBOOK_TO_AUDIO,
-        `eBook to Audiobook: ${title || 'Untitled'}`
-      )
-
-      if (!deductResult.success) {
-        toast.error('Failed to deduct credits')
-        setLoading(false)
-        return
-      }
-
-      // Update local credit balance
-      if (deductResult.data) {
-        setCreditBalance(deductResult.data.balance)
-      }
-
-      // Log activity
-      CentralActivity.log('ebook_to_audio_started', { title, wordCount, voice })
-
+      addLog('Making fetch request to /api/ebook-to-audio...')
+      
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 300000)
+      const timeoutId = setTimeout(() => {
+        addLog('Client timeout triggered at 5 minutes')
+        controller.abort()
+      }, 300000)
 
       const response = await fetch('/api/ebook-to-audio', {
         method: 'POST',
@@ -144,66 +88,55 @@ export default function ConvertPage() {
         body: JSON.stringify({ 
           text, 
           title: title || 'Untitled', 
-          voice,
-          userId: user.id 
+          voice
         }),
         signal: controller.signal
       })
 
       clearTimeout(timeoutId)
-      const data = await response.json()
+      addLog(`Response received: status=${response.status}`)
+      
+      const responseText = await response.text()
+      addLog(`Response body length: ${responseText.length}`)
+      
+      let data
+      try {
+        data = JSON.parse(responseText)
+        addLog(`Parsed JSON: success=${data.success}, hasAudiobook=${!!data.audiobook}`)
+      } catch (parseErr) {
+        addLog(`JSON parse error: ${parseErr}`)
+        addLog(`Raw response: ${responseText.substring(0, 200)}`)
+        throw new Error('Invalid JSON response')
+      }
 
       if (data.success && data.audiobook) {
+        addLog(`SUCCESS! URL: ${data.audiobook.downloadUrl}`)
         setResult(data.audiobook)
         toast.success('Audiobook created!')
-        CentralActivity.log('ebook_to_audio_completed', { 
-          title: data.audiobook.title,
-          duration: data.audiobook.duration 
-        })
-        CentralAnalytics.track('conversion_completed', { type: 'ebook_to_audio' })
       } else {
-        // Refund credits on failure
-        await CentralCredits.refund(CREDIT_COSTS.EBOOK_TO_AUDIO, 'Conversion failed')
-        await checkAuth() // Refresh balance
+        addLog(`API returned error: ${data.error}`)
         setError(data.error || 'Conversion failed')
-        toast.error(data.error || 'Conversion failed - credits refunded')
-        CentralActivity.log('ebook_to_audio_failed', { error: data.error })
+        toast.error(data.error || 'Conversion failed')
       }
     } catch (err: any) {
-      // Refund credits on error
-      await CentralCredits.refund(CREDIT_COSTS.EBOOK_TO_AUDIO, `Error: ${err.message}`)
-      await checkAuth() // Refresh balance
-      
+      addLog(`Catch block: ${err.name} - ${err.message}`)
       if (err.name === 'AbortError') {
-        setError('Request timed out. Credits refunded.')
-        toast.error('Request timed out - credits refunded')
+        setError('Request timed out after 5 minutes.')
+        toast.error('Request timed out')
       } else {
-        setError(err.message || 'Failed to convert - credits refunded')
-        toast.error('Failed to convert - credits refunded')
+        setError(err.message || 'Failed to convert')
+        toast.error('Failed to convert')
       }
-      CentralActivity.log('ebook_to_audio_error', { error: err.message })
     } finally {
       setLoading(false)
       setProgress('')
+      addLog('Conversion attempt finished')
     }
   }
 
   const handleAudioToEbook = async () => {
-    if (!user) {
-      toast.error('Please log in to convert')
-      handleLogin()
-      return
-    }
-
     if (!audioFile) {
       toast.error('Please select an audio file')
-      return
-    }
-
-    // Check credits
-    const creditCheck = await CentralCredits.hasEnough(CREDIT_COSTS.AUDIO_TO_EBOOK)
-    if (!creditCheck.hasEnough) {
-      toast.error(`Insufficient credits. Need ${CREDIT_COSTS.AUDIO_TO_EBOOK}, have ${creditCheck.balance}`)
       return
     }
 
@@ -213,32 +146,10 @@ export default function ConvertPage() {
     setProgress('Uploading and transcribing audio...')
 
     try {
-      // Deduct credits
-      const deductResult = await CentralCredits.deduct(
-        CREDIT_COSTS.AUDIO_TO_EBOOK,
-        `Audio to eBook: ${title || audioFile.name}`
-      )
-
-      if (!deductResult.success) {
-        toast.error('Failed to deduct credits')
-        setLoading(false)
-        return
-      }
-
-      if (deductResult.data) {
-        setCreditBalance(deductResult.data.balance)
-      }
-
-      CentralActivity.log('audio_to_ebook_started', { 
-        title: title || audioFile.name,
-        fileSize: audioFile.size 
-      })
-
       const formData = new FormData()
       formData.append('audio', audioFile)
       formData.append('title', title || audioFile.name.replace(/\.[^/.]+$/, ''))
       formData.append('format', outputFormat)
-      formData.append('userId', user.id)
 
       const response = await fetch('/api/audio-to-ebook', {
         method: 'POST',
@@ -250,22 +161,13 @@ export default function ConvertPage() {
       if (data.success && data.ebook) {
         setResult(data.ebook)
         toast.success('eBook created!')
-        CentralActivity.log('audio_to_ebook_completed', { 
-          title: data.ebook.title,
-          wordCount: data.ebook.wordCount 
-        })
-        CentralAnalytics.track('conversion_completed', { type: 'audio_to_ebook' })
       } else {
-        await CentralCredits.refund(CREDIT_COSTS.AUDIO_TO_EBOOK, 'Transcription failed')
-        await checkAuth()
         setError(data.error || 'Transcription failed')
-        toast.error(data.error || 'Transcription failed - credits refunded')
+        toast.error(data.error || 'Transcription failed')
       }
     } catch (err: any) {
-      await CentralCredits.refund(CREDIT_COSTS.AUDIO_TO_EBOOK, `Error: ${err.message}`)
-      await checkAuth()
-      setError(err.message || 'Failed to transcribe - credits refunded')
-      toast.error('Failed to transcribe - credits refunded')
+      setError(err.message || 'Failed to transcribe')
+      toast.error('Failed to transcribe')
     } finally {
       setLoading(false)
       setProgress('')
@@ -275,83 +177,15 @@ export default function ConvertPage() {
   const wordCount = text.split(/\s+/).filter(w => w).length
   const currentCost = mode === 'ebook-to-audio' ? CREDIT_COSTS.EBOOK_TO_AUDIO : CREDIT_COSTS.AUDIO_TO_EBOOK
 
-  // Loading auth state
-  if (checkingAuth) {
-    return (
-      <main className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-primary" />
-          <p className="text-muted-foreground">Loading...</p>
-        </div>
-      </main>
-    )
-  }
-
-  // Not logged in
-  if (!user) {
-    return (
-      <main className="min-h-screen bg-background py-12">
-        <div className="container mx-auto px-4 max-w-lg">
-          <div className="bg-card border rounded-xl p-8 text-center">
-            <LogIn className="h-16 w-16 mx-auto mb-6 text-primary" />
-            <h1 className="text-2xl font-bold mb-4">Sign In Required</h1>
-            <p className="text-muted-foreground mb-6">
-              Please sign in to your CR AudioViz AI account to use the conversion tools.
-            </p>
-            <button
-              onClick={handleLogin}
-              className="inline-flex items-center gap-2 px-8 py-4 bg-primary text-primary-foreground rounded-lg font-semibold hover:bg-primary/90"
-            >
-              <LogIn className="h-5 w-5" />
-              Sign In to Continue
-            </button>
-            <p className="text-sm text-muted-foreground mt-4">
-              Don't have an account?{' '}
-              <a href="https://craudiovizai.com/signup" className="text-primary hover:underline">
-                Sign up free
-              </a>
-            </p>
-          </div>
-        </div>
-      </main>
-    )
-  }
-
   return (
     <main className="min-h-screen bg-background py-12">
       <div className="container mx-auto px-4 max-w-3xl">
-        {/* Header with Credit Balance */}
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-3xl font-bold">Convert Content</h1>
-            <p className="text-muted-foreground">
-              Convert eBooks to audiobooks or transcribe audio to text
-            </p>
-          </div>
-          <div className="flex items-center gap-2 px-4 py-2 bg-primary/10 rounded-lg">
-            <Coins className="h-5 w-5 text-primary" />
-            <span className="font-semibold">{creditBalance.toLocaleString()}</span>
-            <span className="text-sm text-muted-foreground">credits</span>
-          </div>
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold mb-2">Convert Content</h1>
+          <p className="text-muted-foreground">
+            Convert eBooks to audiobooks or transcribe audio to text
+          </p>
         </div>
-
-        {/* Insufficient Credits Warning */}
-        {creditBalance < currentCost && (
-          <div className="mb-6 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
-            <div className="flex items-center gap-3">
-              <AlertCircle className="h-5 w-5 text-amber-500" />
-              <div>
-                <p className="font-medium">Insufficient Credits</p>
-                <p className="text-sm text-muted-foreground">
-                  This conversion requires {currentCost} credits. You have {creditBalance}.{' '}
-                  <a href="https://craudiovizai.com/credits" className="text-primary hover:underline">
-                    Buy more credits
-                  </a>
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Mode Toggle */}
         <div className="flex justify-center gap-4 mb-8">
@@ -365,7 +199,6 @@ export default function ConvertPage() {
           >
             <Headphones className="h-5 w-5" />
             eBook → Audiobook
-            <span className="text-xs opacity-75">({CREDIT_COSTS.EBOOK_TO_AUDIO} cr)</span>
           </button>
           <button
             onClick={() => { setMode('audio-to-ebook'); setResult(null); setError(null) }}
@@ -377,9 +210,18 @@ export default function ConvertPage() {
           >
             <FileAudio className="h-5 w-5" />
             Audiobook → eBook
-            <span className="text-xs opacity-75">({CREDIT_COSTS.AUDIO_TO_EBOOK} cr)</span>
           </button>
         </div>
+
+        {/* Debug Log */}
+        {debugLog.length > 0 && (
+          <div className="mb-4 p-4 bg-gray-100 dark:bg-gray-900 rounded-lg text-xs font-mono max-h-40 overflow-auto">
+            <strong>Debug Log:</strong>
+            {debugLog.map((log, i) => (
+              <div key={i} className="text-gray-600 dark:text-gray-400">{log}</div>
+            ))}
+          </div>
+        )}
 
         {/* Success Result */}
         {result && (
@@ -499,7 +341,7 @@ export default function ConvertPage() {
 
               <button
                 onClick={handleEbookToAudio}
-                disabled={loading || !text || creditBalance < CREDIT_COSTS.EBOOK_TO_AUDIO}
+                disabled={loading || !text}
                 className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-primary text-primary-foreground rounded-lg font-semibold text-lg hover:bg-primary/90 disabled:opacity-50"
               >
                 {loading ? (
@@ -590,7 +432,7 @@ export default function ConvertPage() {
 
               <button
                 onClick={handleAudioToEbook}
-                disabled={loading || !audioFile || creditBalance < CREDIT_COSTS.AUDIO_TO_EBOOK}
+                disabled={loading || !audioFile}
                 className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-primary text-primary-foreground rounded-lg font-semibold text-lg hover:bg-primary/90 disabled:opacity-50"
               >
                 {loading ? (
@@ -608,14 +450,6 @@ export default function ConvertPage() {
             </div>
           </div>
         )}
-
-        {/* User Info Footer */}
-        <div className="mt-8 text-center text-sm text-muted-foreground">
-          Logged in as {user.email} •{' '}
-          <button onClick={() => CentralAuth.signOut().then(() => window.location.reload())} className="text-primary hover:underline">
-            Sign Out
-          </button>
-        </div>
       </div>
     </main>
   )
