@@ -1,5 +1,5 @@
-// GET /api/jobs/[id]/status - Get job status and progress
-// Used for polling from the UI
+// GET /api/jobs/[id]/status - Get job status
+// Adapted for existing conversion_jobs table
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
@@ -26,18 +26,24 @@ export async function GET(
       return NextResponse.json({ error: 'Job not found' }, { status: 404 })
     }
 
+    // Parse metadata from output_path
+    let meta: any = {}
+    try {
+      meta = JSON.parse(job.output_path || '{}')
+    } catch {}
+
     return NextResponse.json({
       success: true,
       job: {
         id: job.id,
-        type: job.type,
+        type: job.source_type,
         status: job.status,
-        progress: job.progress_percent,
-        currentStep: job.current_step,
-        totalItems: job.total_items,
-        completedItems: job.completed_items,
-        estimatedDuration: job.estimated_duration,
-        output: job.output_data,
+        progress: job.progress || 0,
+        currentStep: meta.current_step || 'Processing...',
+        totalItems: meta.total_items || 1,
+        completedItems: meta.completed_items || 0,
+        estimatedDuration: meta.estimated_duration,
+        output: meta.output_data,
         error: job.error_message,
         createdAt: job.created_at,
         startedAt: job.started_at,
