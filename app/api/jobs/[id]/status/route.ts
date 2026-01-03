@@ -1,5 +1,4 @@
 // GET /api/jobs/[id]/status - Get job status
-// Fixed for Next.js 14+ params handling
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
@@ -9,12 +8,16 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+interface RouteContext {
+  params: { id: string }
+}
+
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  context: RouteContext
 ) {
   try {
-    const { id: jobId } = await params
+    const jobId = context.params.id
 
     const { data: job, error } = await supabaseAdmin
       .from('conversion_jobs')
@@ -26,10 +29,12 @@ export async function GET(
       return NextResponse.json({ error: 'Job not found' }, { status: 404 })
     }
 
-    let meta: any = {}
+    let meta: Record<string, unknown> = {}
     try {
       meta = JSON.parse(job.output_path || '{}')
-    } catch {}
+    } catch {
+      // ignore parse errors
+    }
 
     return NextResponse.json({
       success: true,
