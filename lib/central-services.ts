@@ -5,7 +5,7 @@
  * All auth, credits, and analytics go through craudiovizai.com/api
  * This follows the Henderson Standard for all apps.
  * 
- * @version 1.0.0
+ * @version 2.0.0
  * @date January 2, 2026
  */
 
@@ -19,7 +19,7 @@ interface CentralResponse<T> {
   message?: string;
 }
 
-interface User {
+export interface User {
   id: string;
   email: string;
   name?: string;
@@ -33,6 +33,12 @@ interface CreditBalance {
   plan: string;
   expires_at?: string;
 }
+
+// Admin emails that get free access to all features
+export const ADMIN_EMAILS = [
+  'royhenderson@craudiovizai.com',
+  'cindyhenderson@craudiovizai.com'
+];
 
 // ============================================================================
 // AUTHENTICATION
@@ -78,11 +84,16 @@ export const CentralAuth = {
   },
 
   getOAuthUrl(provider: 'google' | 'github' | 'discord'): string {
-    return `${CENTRAL_API_BASE}/auth/oauth/${provider}?redirect=${encodeURIComponent(window.location.origin)}`;
+    return `${CENTRAL_API_BASE}/auth/oauth/${provider}?redirect=${encodeURIComponent(typeof window !== 'undefined' ? window.location.origin : '')}`;
   },
 
   getLoginUrl(): string {
-    return `https://craudiovizai.com/login?redirect=${encodeURIComponent(window.location.href)}`;
+    const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
+    return `https://craudiovizai.com/login?redirect=${encodeURIComponent(currentUrl)}`;
+  },
+
+  isAdmin(email: string): boolean {
+    return ADMIN_EMAILS.includes(email);
   }
 };
 
@@ -183,6 +194,48 @@ export const CentralActivity = {
 };
 
 // ============================================================================
+// USER ASSETS
+// ============================================================================
+
+export const CentralAssets = {
+  async save(asset: {
+    name: string;
+    type: 'audiobook' | 'ebook';
+    storagePath: string;
+    publicUrl: string;
+    fileSize: number;
+    metadata?: Record<string, any>;
+  }): Promise<CentralResponse<{ id: string }>> {
+    try {
+      const res = await fetch(`${CENTRAL_API_BASE}/assets`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...asset, app_id: APP_ID })
+      });
+      return res.json();
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  },
+
+  async list(type?: 'audiobook' | 'ebook'): Promise<CentralResponse<any[]>> {
+    try {
+      const url = type 
+        ? `${CENTRAL_API_BASE}/assets?type=${type}&app_id=${APP_ID}`
+        : `${CENTRAL_API_BASE}/assets?app_id=${APP_ID}`;
+      const res = await fetch(url, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      return res.json();
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+};
+
+// ============================================================================
 // CREDIT COSTS FOR JAVARI BOOKS
 // ============================================================================
 
@@ -200,5 +253,7 @@ export default {
   CentralCredits,
   CentralAnalytics,
   CentralActivity,
-  CREDIT_COSTS
+  CentralAssets,
+  CREDIT_COSTS,
+  ADMIN_EMAILS
 };
