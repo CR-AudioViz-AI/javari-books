@@ -1,5 +1,5 @@
 // GET /api/jobs/[id]/status - Get job status
-// Adapted for existing conversion_jobs table
+// Fixed for Next.js 14+ params handling
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
@@ -11,10 +11,10 @@ const supabaseAdmin = createClient(
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const jobId = params.id
+    const { id: jobId } = await params
 
     const { data: job, error } = await supabaseAdmin
       .from('conversion_jobs')
@@ -26,7 +26,6 @@ export async function GET(
       return NextResponse.json({ error: 'Job not found' }, { status: 404 })
     }
 
-    // Parse metadata from output_path
     let meta: any = {}
     try {
       meta = JSON.parse(job.output_path || '{}')
