@@ -1,5 +1,5 @@
-// GET /api/jobs - List user's jobs
-// Shows all conversion jobs for a user
+// GET /api/jobs - List jobs
+// Adapted for existing conversion_jobs table
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
 
     let query = supabaseAdmin
       .from('conversion_jobs')
-      .select('id, type, status, progress_percent, current_step, total_items, completed_items, output_data, error_message, created_at, completed_at')
+      .select('*')
       .order('created_at', { ascending: false })
       .limit(limit)
 
@@ -39,19 +39,26 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      jobs: jobs.map(job => ({
-        id: job.id,
-        type: job.type,
-        status: job.status,
-        progress: job.progress_percent,
-        currentStep: job.current_step,
-        totalItems: job.total_items,
-        completedItems: job.completed_items,
-        output: job.output_data,
-        error: job.error_message,
-        createdAt: job.created_at,
-        completedAt: job.completed_at
-      })),
+      jobs: jobs.map(job => {
+        let meta: any = {}
+        try {
+          meta = JSON.parse(job.output_path || '{}')
+        } catch {}
+
+        return {
+          id: job.id,
+          type: job.source_type,
+          status: job.status,
+          progress: job.progress || 0,
+          currentStep: meta.current_step,
+          totalItems: meta.total_items,
+          completedItems: meta.completed_items,
+          output: meta.output_data,
+          error: job.error_message,
+          createdAt: job.created_at,
+          completedAt: job.completed_at
+        }
+      }),
       total: jobs.length
     })
 
