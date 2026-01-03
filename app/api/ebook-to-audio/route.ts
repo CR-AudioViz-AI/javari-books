@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 
+// Enable 5-minute timeout for Pro plan
+export const maxDuration = 300
+
 const CENTRAL_API_BASE = process.env.NEXT_PUBLIC_CENTRAL_API_URL || 'https://craudiovizai.com/api'
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
@@ -12,23 +15,46 @@ const supabaseAdmin = createClient(
 
 const CREDIT_COST = 100
 
-const VOICES = {
+const VOICES: Record<string, string> = {
   alloy: 'Alloy - Neutral',
   echo: 'Echo - Male',
   fable: 'Fable - British',
   onyx: 'Onyx - Deep Male',
   nova: 'Nova - Female',
   shimmer: 'Shimmer - Soft Female'
-} as const
-
-type VoiceId = keyof typeof VOICES
+}
 
 interface ConvertRequest {
   bookId?: string
   text?: string
-  voice?: VoiceId
+  voice?: string
   userId?: string
   title?: string
+}
+
+function splitIntoChunks(text: string, maxLength: number): string[] {
+  const chunks: string[] = []
+  const sentences = text.split(/(?<=[.!?])\s+/)
+  let currentChunk = ''
+
+  for (const sentence of sentences) {
+    if ((currentChunk + sentence).length > maxLength) {
+      if (currentChunk) chunks.push(currentChunk.trim())
+      currentChunk = sentence
+    } else {
+      currentChunk += ' ' + sentence
+    }
+  }
+  if (currentChunk) chunks.push(currentChunk.trim())
+  return chunks
+}
+
+function estimateDuration(text: string): string {
+  const words = text.split(/\s+/).length
+  const minutes = Math.ceil(words / 150)
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return hours > 0 ? `${hours}h ${remainingMinutes}m` : `${minutes}m`
 }
 
 export async function POST(request: NextRequest) {
@@ -86,11 +112,15 @@ export async function POST(request: NextRequest) {
     const chunks = splitIntoChunks(textContent, 4000)
     const audioBuffers: Buffer[] = []
 
-    for (const chunk of chunks) {
+    console.log(`Processing ${chunks.length} chunks for "${bookTitle}"`)
+
+    for (let i = 0; i < chunks.length; i++) {
+      console.log(`Converting chunk ${i + 1}/${chunks.length}...`)
+      
       const mp3Response = await openai.audio.speech.create({
         model: 'tts-1',
-        voice: voice,
-        input: chunk
+        voice: voice as any,
+        input: chunks[i]
       })
 
       const buffer = Buffer.from(await mp3Response.arrayBuffer())
@@ -98,9 +128,10 @@ export async function POST(request: NextRequest) {
     }
 
     const combinedAudio = Buffer.concat(audioBuffers)
-
     const slug = bookTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')
     const audioPath = `audiobooks/${slug}-${Date.now()}.mp3`
+
+    console.log(`Uploading ${(combinedAudio.length / 1024 / 1024).toFixed(2)}MB to ${audioPath}`)
 
     const { error: uploadError } = await supabaseAdmin.storage
       .from('assets')
@@ -139,11 +170,12 @@ export async function POST(request: NextRequest) {
       success: true,
       audiobook: {
         title: bookTitle,
-        voice: VOICES[voice],
+        voice: VOICES[voice] || voice,
         duration: estimateDuration(textContent),
         downloadUrl: urlData.publicUrl,
         storagePath: audioPath,
-        chunks: chunks.length
+        chunks: chunks.length,
+        fileSize: combinedAudio.length
       },
       creditsUsed: CREDIT_COST
     })
@@ -162,36 +194,7 @@ export async function GET() {
     voices: VOICES,
     creditCost: CREDIT_COST,
     maxCharsPerChunk: 4000,
+    maxDuration: '300 seconds (Pro plan)',
     supportedFormats: ['docx', 'txt', 'md']
   })
-}
-
-function splitIntoChunks(text: string, maxLength: number): string[] {
-  const chunks: string[] = []
-  const sentences = text.split(/(?<=[.!?])\s+/)
-  let currentChunk = ''
-
-  for (const sentence of sentences) {
-    if ((currentChunk + sentence).length > maxLength) {
-      if (currentChunk) chunks.push(currentChunk.trim())
-      currentChunk = sentence
-    } else {
-      currentChunk += ' ' + sentence
-    }
-  }
-
-  if (currentChunk) chunks.push(currentChunk.trim())
-  return chunks
-}
-
-function estimateDuration(text: string): string {
-  const words = text.split(/\s+/).length
-  const minutes = Math.ceil(words / 150)
-  const hours = Math.floor(minutes / 60)
-  const remainingMinutes = minutes % 60
-  
-  if (hours > 0) {
-    return `${hours}h ${remainingMinutes}m`
-  }
-  return `${minutes}m`
 }
