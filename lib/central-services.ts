@@ -1,26 +1,16 @@
 /**
- * CR AudioViz AI - Central Services Client
- * =========================================
+ * Javari Books - Central Services Integration
+ * ============================================
  * 
- * This file MUST be included in every app in the ecosystem.
- * All apps route through craudiovizai.com/api for:
- * - Authentication
- * - Payments (Stripe, PayPal)
- * - Credits
- * - Analytics
- * - Support/Ticketing
- * - User Management
- * - Activity Logging
- * 
- * NO app should have its own auth, payment, or credit endpoints.
- * Everything goes through the central hub.
+ * All auth, credits, and analytics go through craudiovizai.com/api
+ * This follows the Henderson Standard for all apps.
  * 
  * @version 1.0.0
- * @date January 1, 2026
- * @author CR AudioViz AI
+ * @date January 2, 2026
  */
 
 const CENTRAL_API_BASE = process.env.NEXT_PUBLIC_CENTRAL_API_URL || 'https://craudiovizai.com/api';
+const APP_ID = 'javari-books';
 
 interface CentralResponse<T> {
   success: boolean;
@@ -44,20 +34,11 @@ interface CreditBalance {
   expires_at?: string;
 }
 
-interface PaymentIntent {
-  id: string;
-  client_secret: string;
-  amount: number;
-}
-
 // ============================================================================
 // AUTHENTICATION
 // ============================================================================
 
 export const CentralAuth = {
-  /**
-   * Get current user session
-   */
   async getSession(): Promise<CentralResponse<User>> {
     try {
       const res = await fetch(`${CENTRAL_API_BASE}/auth/session`, {
@@ -70,9 +51,6 @@ export const CentralAuth = {
     }
   },
 
-  /**
-   * Sign in with email/password
-   */
   async signIn(email: string, password: string): Promise<CentralResponse<User>> {
     try {
       const res = await fetch(`${CENTRAL_API_BASE}/auth/signin`, {
@@ -87,9 +65,6 @@ export const CentralAuth = {
     }
   },
 
-  /**
-   * Sign out current user
-   */
   async signOut(): Promise<CentralResponse<void>> {
     try {
       const res = await fetch(`${CENTRAL_API_BASE}/auth/signout`, {
@@ -102,11 +77,12 @@ export const CentralAuth = {
     }
   },
 
-  /**
-   * Get OAuth URL for provider
-   */
   getOAuthUrl(provider: 'google' | 'github' | 'discord'): string {
-    return `${CENTRAL_API_BASE}/auth/oauth/${provider}`;
+    return `${CENTRAL_API_BASE}/auth/oauth/${provider}?redirect=${encodeURIComponent(window.location.origin)}`;
+  },
+
+  getLoginUrl(): string {
+    return `https://craudiovizai.com/login?redirect=${encodeURIComponent(window.location.href)}`;
   }
 };
 
@@ -115,9 +91,6 @@ export const CentralAuth = {
 // ============================================================================
 
 export const CentralCredits = {
-  /**
-   * Get user's credit balance
-   */
   async getBalance(): Promise<CentralResponse<CreditBalance>> {
     try {
       const res = await fetch(`${CENTRAL_API_BASE}/credits/balance`, {
@@ -130,16 +103,13 @@ export const CentralCredits = {
     }
   },
 
-  /**
-   * Deduct credits for usage
-   */
-  async deduct(amount: number, reason: string, appId: string): Promise<CentralResponse<CreditBalance>> {
+  async deduct(amount: number, reason: string): Promise<CentralResponse<CreditBalance>> {
     try {
       const res = await fetch(`${CENTRAL_API_BASE}/credits/deduct`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount, reason, app_id: appId })
+        body: JSON.stringify({ amount, reason, app_id: APP_ID })
       });
       return res.json();
     } catch (error: any) {
@@ -147,39 +117,13 @@ export const CentralCredits = {
     }
   },
 
-  /**
-   * Refund credits (for errors)
-   */
-  async refund(amount: number, reason: string, appId: string): Promise<CentralResponse<CreditBalance>> {
+  async refund(amount: number, reason: string): Promise<CentralResponse<CreditBalance>> {
     try {
       const res = await fetch(`${CENTRAL_API_BASE}/credits/refund`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount, reason, app_id: appId })
-      });
-      return res.json();
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
-};
-
-// ============================================================================
-// PAYMENTS
-// ============================================================================
-
-export const CentralPayments = {
-  /**
-   * Create Stripe checkout session
-   */
-  async createStripeCheckout(priceId: string, successUrl: string, cancelUrl: string): Promise<CentralResponse<{ url: string }>> {
-    try {
-      const res = await fetch(`${CENTRAL_API_BASE}/stripe/checkout`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ price_id: priceId, success_url: successUrl, cancel_url: cancelUrl })
+        body: JSON.stringify({ amount, reason, app_id: APP_ID })
       });
       return res.json();
     } catch (error: any) {
@@ -187,36 +131,12 @@ export const CentralPayments = {
     }
   },
 
-  /**
-   * Create PayPal order
-   */
-  async createPayPalOrder(packageId: string): Promise<CentralResponse<{ order_id: string }>> {
-    try {
-      const res = await fetch(`${CENTRAL_API_BASE}/paypal/orders`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ package_id: packageId })
-      });
-      return res.json();
-    } catch (error: any) {
-      return { success: false, error: error.message };
+  async hasEnough(required: number): Promise<{ hasEnough: boolean; balance: number }> {
+    const result = await this.getBalance();
+    if (result.success && result.data) {
+      return { hasEnough: result.data.balance >= required, balance: result.data.balance };
     }
-  },
-
-  /**
-   * Get subscription status
-   */
-  async getSubscription(): Promise<CentralResponse<{ plan: string; status: string; renews_at?: string }>> {
-    try {
-      const res = await fetch(`${CENTRAL_API_BASE}/stripe/subscription`, {
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      return res.json();
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
+    return { hasEnough: false, balance: 0 };
   }
 };
 
@@ -225,65 +145,21 @@ export const CentralPayments = {
 // ============================================================================
 
 export const CentralAnalytics = {
-  /**
-   * Track an event
-   */
-  async track(event: string, properties: Record<string, any>, appId: string): Promise<void> {
+  async track(event: string, properties?: Record<string, any>): Promise<void> {
     try {
       await fetch(`${CENTRAL_API_BASE}/analytics/track`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event, properties, app_id: appId, timestamp: new Date().toISOString() })
+        body: JSON.stringify({ event, properties, app_id: APP_ID })
       });
     } catch (error) {
-      console.error('Analytics track error:', error);
+      console.warn('Analytics tracking failed:', error);
     }
   },
 
-  /**
-   * Track page view
-   */
-  async pageView(path: string, appId: string): Promise<void> {
-    await this.track('page_view', { path }, appId);
-  }
-};
-
-// ============================================================================
-// SUPPORT / TICKETS
-// ============================================================================
-
-export const CentralSupport = {
-  /**
-   * Create a support ticket
-   */
-  async createTicket(subject: string, message: string, category: string, appId: string): Promise<CentralResponse<{ ticket_id: string }>> {
-    try {
-      const res = await fetch(`${CENTRAL_API_BASE}/tickets`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject, message, category, app_id: appId })
-      });
-      return res.json();
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  },
-
-  /**
-   * Get user's tickets
-   */
-  async getTickets(): Promise<CentralResponse<any[]>> {
-    try {
-      const res = await fetch(`${CENTRAL_API_BASE}/tickets`, {
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      return res.json();
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
+  async pageView(page: string): Promise<void> {
+    await this.track('page_view', { page, app_id: APP_ID });
   }
 };
 
@@ -292,58 +168,37 @@ export const CentralSupport = {
 // ============================================================================
 
 export const CentralActivity = {
-  /**
-   * Log an activity
-   */
-  async log(action: string, details: Record<string, any>, appId: string): Promise<void> {
+  async log(action: string, details?: Record<string, any>): Promise<void> {
     try {
-      await fetch(`${CENTRAL_API_BASE}/activity`, {
+      await fetch(`${CENTRAL_API_BASE}/activity/log`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, details, app_id: appId, timestamp: new Date().toISOString() })
+        body: JSON.stringify({ action, details, app_id: APP_ID })
       });
     } catch (error) {
-      console.error('Activity log error:', error);
+      console.warn('Activity logging failed:', error);
     }
   }
 };
 
 // ============================================================================
-// CROSS-SELLING
+// CREDIT COSTS FOR JAVARI BOOKS
 // ============================================================================
 
-export const CentralCrossSell = {
-  /**
-   * Get recommended apps/products for user
-   */
-  async getRecommendations(currentAppId: string): Promise<CentralResponse<any[]>> {
-    try {
-      const res = await fetch(`${CENTRAL_API_BASE}/recommendations?app_id=${currentAppId}`, {
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      return res.json();
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
+export const CREDIT_COSTS = {
+  EBOOK_TO_AUDIO: 100,
+  AUDIO_TO_EBOOK: 75,
+  GENERATE_EBOOK: 50,
+  SPLIT_AUDIOBOOK: 25,
+  SPLIT_EBOOK: 25,
+  BULK_CONVERT_PER_ITEM: 100
+} as const;
+
+export default {
+  CentralAuth,
+  CentralCredits,
+  CentralAnalytics,
+  CentralActivity,
+  CREDIT_COSTS
 };
-
-// ============================================================================
-// EXPORT ALL
-// ============================================================================
-
-export const CentralServices = {
-  Auth: CentralAuth,
-  Credits: CentralCredits,
-  Payments: CentralPayments,
-  Analytics: CentralAnalytics,
-  Support: CentralSupport,
-  Activity: CentralActivity,
-  CrossSell: CentralCrossSell,
-  API_BASE: CENTRAL_API_BASE
-};
-
-export default CentralServices;
-
