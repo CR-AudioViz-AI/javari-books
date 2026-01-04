@@ -1,20 +1,31 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
-import { Headphones, FileAudio, Loader2, Download, Upload, CheckCircle, AlertCircle, LogIn, Coins, Library, Crown } from 'lucide-react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { 
+  Headphones, FileAudio, Loader2, Download, Upload, CheckCircle, AlertCircle, 
+  LogIn, Coins, Library, Crown, FileText, Play, Pause, SkipForward, SkipBack,
+  Volume2, VolumeX, Clock, Share2, Settings, Sparkles, Zap, FileUp, X,
+  ChevronDown, Info, History, Trash2, Copy, Check
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { CentralAuth, CentralCredits, CentralAnalytics, CentralActivity, CREDIT_COSTS, type User } from '@/lib/central-services'
 
 type Mode = 'ebook-to-audio' | 'audio-to-ebook'
 type Voice = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer'
+type Quality = 'tts-1' | 'tts-1-hd'
 
-const VOICES: Record<Voice, string> = {
-  alloy: 'Alloy - Neutral',
-  echo: 'Echo - Male',
-  fable: 'Fable - British',
-  onyx: 'Onyx - Deep Male',
-  nova: 'Nova - Female',
-  shimmer: 'Shimmer - Soft Female'
+const VOICES: Record<Voice, { label: string; description: string; gender: string }> = {
+  alloy: { label: 'Alloy', description: 'Versatile, neutral voice', gender: 'neutral' },
+  echo: { label: 'Echo', description: 'Clear, masculine voice', gender: 'male' },
+  fable: { label: 'Fable', description: 'British accent, storytelling', gender: 'neutral' },
+  onyx: { label: 'Onyx', description: 'Deep, authoritative voice', gender: 'male' },
+  nova: { label: 'Nova', description: 'Warm, expressive female voice', gender: 'female' },
+  shimmer: { label: 'Shimmer', description: 'Soft, gentle female voice', gender: 'female' }
+}
+
+const QUALITY_OPTIONS: Record<Quality, { label: string; credits: number }> = {
+  'tts-1': { label: 'Standard', credits: 50 },
+  'tts-1-hd': { label: 'HD Quality', credits: 100 }
 }
 
 // Admin emails that get free access
@@ -37,7 +48,16 @@ interface ConversionResult {
   assetId?: string
 }
 
+interface RecentConversion {
+  id: string
+  title: string
+  type: 'audiobook' | 'ebook'
+  createdAt: string
+  downloadUrl: string
+}
+
 export default function ConvertPage() {
+  // Core state
   const [mode, setMode] = useState<Mode>('ebook-to-audio')
   const [loading, setLoading] = useState(false)
   const [checkingAuth, setCheckingAuth] = useState(true)
@@ -45,24 +65,60 @@ export default function ConvertPage() {
   const [creditBalance, setCreditBalance] = useState<number>(0)
   const [result, setResult] = useState<ConversionResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [progress, setProgress] = useState<string>('')
+  const [progress, setProgress] = useState<number>(0)
+  const [progressText, setProgressText] = useState<string>('')
+  
+  // File handling
+  const [dragOver, setDragOver] = useState(false)
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const audioInputRef = useRef<HTMLInputElement>(null)
 
   // eBook to Audio state
   const [text, setText] = useState('')
   const [title, setTitle] = useState('')
   const [voice, setVoice] = useState<Voice>('nova')
+  const [quality, setQuality] = useState<Quality>('tts-1')
+  const [showVoiceSelector, setShowVoiceSelector] = useState(false)
 
   // Audio to eBook state
   const [audioFile, setAudioFile] = useState<File | null>(null)
-  const [outputFormat, setOutputFormat] = useState<'txt' | 'md'>('txt')
+  const [outputFormat, setOutputFormat] = useState<'txt' | 'md' | 'docx'>('txt')
+
+  // Audio player state
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [playbackSpeed, setPlaybackSpeed] = useState(1)
+  const [volume, setVolume] = useState(1)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const audioRef = useRef<HTMLAudioElement>(null)
+
+  // Recent conversions
+  const [recentConversions, setRecentConversions] = useState<RecentConversion[]>([])
+  const [showRecent, setShowRecent] = useState(false)
+
+  // Clipboard state
+  const [copied, setCopied] = useState(false)
 
   // Check if user is admin (free access)
   const isAdmin = user?.email && ADMIN_EMAILS.includes(user.email)
 
-  // Check auth and credits on mount
+  // Calculate current credit cost
+  const currentCost = mode === 'ebook-to-audio' 
+    ? (isAdmin ? 0 : QUALITY_OPTIONS[quality].credits)
+    : (isAdmin ? 0 : CREDIT_COSTS.AUDIO_TO_EBOOK)
+
+  // Word count and estimated duration
+  const wordCount = text.split(/\s+/).filter(w => w).length
+  const estimatedMinutes = Math.ceil(wordCount / 150)
+  const estimatedDuration = estimatedMinutes >= 60 
+    ? `${Math.floor(estimatedMinutes / 60)}h ${estimatedMinutes % 60}m`
+    : `${estimatedMinutes}m`
+
+  // Check auth on mount
   useEffect(() => {
     checkAuth()
+    loadRecentConversions()
     CentralAnalytics.pageView('/apps/javari-books')
   }, [])
 
@@ -72,7 +128,6 @@ export default function ConvertPage() {
       const sessionResult = await CentralAuth.getSession()
       if (sessionResult.success && sessionResult.data) {
         setUser(sessionResult.data)
-        
         const creditResult = await CentralCredits.getBalance()
         if (creditResult.success && creditResult.data) {
           setCreditBalance(creditResult.data.balance)
@@ -85,8 +140,100 @@ export default function ConvertPage() {
     }
   }
 
+  const loadRecentConversions = () => {
+    try {
+      const saved = localStorage.getItem('javari-books-recent')
+      if (saved) {
+        setRecentConversions(JSON.parse(saved))
+      }
+    } catch {}
+  }
+
+  const saveToRecent = (conversion: RecentConversion) => {
+    const updated = [conversion, ...recentConversions.filter(c => c.id !== conversion.id)].slice(0, 10)
+    setRecentConversions(updated)
+    localStorage.setItem('javari-books-recent', JSON.stringify(updated))
+  }
+
   const handleLogin = () => {
     window.location.href = CentralAuth.getLoginUrl()
+  }
+
+  // File upload handling
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(true)
+  }
+
+  const handleDragLeave = () => {
+    setDragOver(false)
+  }
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length > 0) {
+      await processUploadedFile(files[0])
+    }
+  }, [mode])
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files && files.length > 0) {
+      await processUploadedFile(files[0])
+    }
+  }
+
+  const processUploadedFile = async (file: File) => {
+    const extension = file.name.split('.').pop()?.toLowerCase()
+    
+    if (mode === 'ebook-to-audio') {
+      if (!['txt', 'md', 'docx', 'pdf'].includes(extension || '')) {
+        toast.error('Please upload a TXT, MD, DOCX, or PDF file')
+        return
+      }
+      
+      setUploadedFile(file)
+      setTitle(file.name.replace(/\.[^/.]+$/, ''))
+      
+      // Extract text from file
+      if (extension === 'txt' || extension === 'md') {
+        const content = await file.text()
+        setText(content)
+        toast.success(`Loaded ${file.name}`)
+      } else if (extension === 'docx') {
+        // Send to API for DOCX parsing
+        setProgressText('Extracting text from document...')
+        try {
+          const formData = new FormData()
+          formData.append('file', file)
+          const response = await fetch('/api/extract-text', {
+            method: 'POST',
+            body: formData
+          })
+          const data = await response.json()
+          if (data.success && data.text) {
+            setText(data.text)
+            toast.success(`Extracted ${data.wordCount.toLocaleString()} words`)
+          } else {
+            toast.error('Failed to extract text from document')
+          }
+        } catch (err) {
+          toast.error('Failed to process document')
+        }
+        setProgressText('')
+      }
+    } else {
+      if (!['mp3', 'wav', 'm4a', 'ogg', 'webm'].includes(extension || '')) {
+        toast.error('Please upload an MP3, WAV, M4A, OGG, or WebM audio file')
+        return
+      }
+      setAudioFile(file)
+      setTitle(file.name.replace(/\.[^/.]+$/, ''))
+      toast.success(`Selected ${file.name}`)
+    }
   }
 
   const handleEbookToAudio = async () => {
@@ -97,39 +244,26 @@ export default function ConvertPage() {
     }
 
     if (!text) {
-      toast.error('Please enter text to convert')
+      toast.error('Please enter or upload text to convert')
       return
     }
 
-    const creditCost = isAdmin ? 0 : CREDIT_COSTS.EBOOK_TO_AUDIO
-
-    // Check credits (skip for admins)
-    if (!isAdmin) {
-      const creditCheck = await CentralCredits.hasEnough(creditCost)
-      if (!creditCheck.hasEnough) {
-        toast.error(`Insufficient credits. Need ${creditCost}, have ${creditCheck.balance}`)
-        return
-      }
+    if (!isAdmin && creditBalance < currentCost) {
+      toast.error(`Insufficient credits. Need ${currentCost}, have ${creditBalance}`)
+      return
     }
 
     setLoading(true)
     setResult(null)
     setError(null)
-    
-    const wordCount = text.split(/\s+/).length
-    const chunks = Math.ceil(text.length / 4000)
-    const estMinutes = Math.ceil(chunks * 15 / 60)
-    setProgress(`Processing ${wordCount.toLocaleString()} words (~${estMinutes} min)...`)
-    
-    toast.info(`Converting ${wordCount.toLocaleString()} words. Please wait...`)
+    setProgress(0)
+    setProgressText('Preparing conversion...')
 
     try {
-      // Deduct credits (skip for admins)
+      // Deduct credits first (except for admins)
       if (!isAdmin) {
-        const deductResult = await CentralCredits.deduct(
-          creditCost,
-          `eBook to Audiobook: ${title || 'Untitled'}`
-        )
+        setProgressText('Processing payment...')
+        const deductResult = await CentralCredits.deduct(currentCost, `Audiobook: ${title || 'Untitled'}`)
         if (!deductResult.success) {
           toast.error('Failed to deduct credits')
           setLoading(false)
@@ -140,17 +274,28 @@ export default function ConvertPage() {
         }
       }
 
-      CentralActivity.log('ebook_to_audio_started', { title, wordCount, voice, isAdmin })
+      CentralActivity.log('ebook_to_audio_started', { 
+        title: title || 'Untitled',
+        wordCount,
+        voice,
+        quality,
+        isAdmin
+      })
+
+      // Calculate chunks for progress
+      const chunks = Math.ceil(text.length / 4000)
+      setProgressText(`Converting text (0/${chunks} chunks)...`)
 
       const response = await fetch('/api/ebook-to-audio', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          text, 
-          title: title || 'Untitled', 
+        body: JSON.stringify({
+          text,
           voice,
+          quality,
           userId: user.id,
           userEmail: user.email,
+          title: title || 'Untitled',
           saveToLibrary: true
         })
       })
@@ -159,17 +304,29 @@ export default function ConvertPage() {
 
       if (data.success && data.audiobook) {
         setResult(data.audiobook)
+        setProgress(100)
+        setProgressText('Complete!')
         toast.success('Audiobook created and saved to your library!')
+        
+        // Save to recent
+        saveToRecent({
+          id: data.audiobook.assetId || Date.now().toString(),
+          title: data.audiobook.title,
+          type: 'audiobook',
+          createdAt: new Date().toISOString(),
+          downloadUrl: data.audiobook.downloadUrl
+        })
+
         CentralActivity.log('ebook_to_audio_completed', { 
           title: data.audiobook.title,
           duration: data.audiobook.duration,
+          chunks: data.audiobook.chunks,
           assetId: data.audiobook.assetId
         })
-        CentralAnalytics.track('conversion_completed', { type: 'ebook_to_audio', isAdmin })
       } else {
-        // Refund credits on failure (skip for admins)
+        // Refund on failure
         if (!isAdmin) {
-          await CentralCredits.refund(creditCost, 'Conversion failed')
+          await CentralCredits.refund(currentCost, 'Conversion failed')
           await checkAuth()
         }
         setError(data.error || 'Conversion failed')
@@ -177,20 +334,20 @@ export default function ConvertPage() {
       }
     } catch (err: any) {
       if (!isAdmin) {
-        await CentralCredits.refund(CREDIT_COSTS.EBOOK_TO_AUDIO, `Error: ${err.message}`)
+        await CentralCredits.refund(currentCost, `Error: ${err.message}`)
         await checkAuth()
       }
       setError(err.message || 'Failed to convert')
       toast.error('Failed to convert' + (isAdmin ? '' : ' - credits refunded'))
     } finally {
       setLoading(false)
-      setProgress('')
+      setProgressText('')
     }
   }
 
   const handleAudioToEbook = async () => {
     if (!user) {
-      toast.error('Please log in to convert')
+      toast.error('Please log in to transcribe')
       handleLogin()
       return
     }
@@ -202,25 +359,20 @@ export default function ConvertPage() {
 
     const creditCost = isAdmin ? 0 : CREDIT_COSTS.AUDIO_TO_EBOOK
 
-    if (!isAdmin) {
-      const creditCheck = await CentralCredits.hasEnough(creditCost)
-      if (!creditCheck.hasEnough) {
-        toast.error(`Insufficient credits. Need ${creditCost}, have ${creditCheck.balance}`)
-        return
-      }
+    if (!isAdmin && creditBalance < creditCost) {
+      toast.error(`Insufficient credits. Need ${creditCost}, have ${creditBalance}`)
+      return
     }
 
     setLoading(true)
     setResult(null)
     setError(null)
-    setProgress('Uploading and transcribing audio...')
+    setProgress(0)
+    setProgressText('Uploading audio file...')
 
     try {
       if (!isAdmin) {
-        const deductResult = await CentralCredits.deduct(
-          creditCost,
-          `Audio to eBook: ${title || audioFile.name}`
-        )
+        const deductResult = await CentralCredits.deduct(creditCost, `Transcription: ${title || audioFile.name}`)
         if (!deductResult.success) {
           toast.error('Failed to deduct credits')
           setLoading(false)
@@ -236,6 +388,9 @@ export default function ConvertPage() {
         fileSize: audioFile.size,
         isAdmin
       })
+
+      setProgress(20)
+      setProgressText('Transcribing audio...')
 
       const formData = new FormData()
       formData.append('audio', audioFile)
@@ -254,7 +409,18 @@ export default function ConvertPage() {
 
       if (data.success && data.ebook) {
         setResult(data.ebook)
+        setProgress(100)
+        setProgressText('Complete!')
         toast.success('eBook created and saved to your library!')
+        
+        saveToRecent({
+          id: data.ebook.assetId || Date.now().toString(),
+          title: data.ebook.title,
+          type: 'ebook',
+          createdAt: new Date().toISOString(),
+          downloadUrl: data.ebook.downloadUrl
+        })
+
         CentralActivity.log('audio_to_ebook_completed', { 
           title: data.ebook.title,
           wordCount: data.ebook.wordCount,
@@ -277,8 +443,70 @@ export default function ConvertPage() {
       toast.error('Failed to transcribe' + (isAdmin ? '' : ' - credits refunded'))
     } finally {
       setLoading(false)
-      setProgress('')
+      setProgressText('')
     }
+  }
+
+  // Audio player controls
+  const togglePlayback = () => {
+    if (!audioRef.current) return
+    if (isPlaying) {
+      audioRef.current.pause()
+    } else {
+      audioRef.current.play()
+    }
+    setIsPlaying(!isPlaying)
+  }
+
+  const handleTimeUpdate = () => {
+    if (audioRef.current) {
+      setCurrentTime(audioRef.current.currentTime)
+    }
+  }
+
+  const handleLoadedMetadata = () => {
+    if (audioRef.current) {
+      setDuration(audioRef.current.duration)
+    }
+  }
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const time = parseFloat(e.target.value)
+    if (audioRef.current) {
+      audioRef.current.currentTime = time
+      setCurrentTime(time)
+    }
+  }
+
+  const changeSpeed = () => {
+    const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2]
+    const currentIndex = speeds.indexOf(playbackSpeed)
+    const nextIndex = (currentIndex + 1) % speeds.length
+    const newSpeed = speeds[nextIndex]
+    setPlaybackSpeed(newSpeed)
+    if (audioRef.current) {
+      audioRef.current.playbackRate = newSpeed
+    }
+  }
+
+  const toggleMute = () => {
+    if (audioRef.current) {
+      audioRef.current.muted = !audioRef.current.muted
+      setVolume(audioRef.current.muted ? 0 : 1)
+    }
+  }
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const copyToClipboard = async (url: string) => {
+    await navigator.clipboard.writeText(url)
+    setCopied(true)
+    toast.success('Link copied!')
+    setTimeout(() => setCopied(false), 2000)
   }
 
   const resetForm = () => {
@@ -287,18 +515,21 @@ export default function ConvertPage() {
     setText('')
     setTitle('')
     setAudioFile(null)
+    setUploadedFile(null)
+    setProgress(0)
+    setProgressText('')
   }
-
-  const wordCount = text.split(/\s+/).filter(w => w).length
-  const currentCost = mode === 'ebook-to-audio' ? CREDIT_COSTS.EBOOK_TO_AUDIO : CREDIT_COSTS.AUDIO_TO_EBOOK
 
   // Loading auth state
   if (checkingAuth) {
     return (
-      <main className="min-h-screen bg-background flex items-center justify-center">
+      <main className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-primary" />
-          <p className="text-muted-foreground">Loading...</p>
+          <div className="relative">
+            <Loader2 className="h-12 w-12 animate-spin mx-auto text-primary" />
+            <Sparkles className="h-4 w-4 absolute -top-1 -right-1 text-amber-500 animate-pulse" />
+          </div>
+          <p className="text-muted-foreground mt-4">Loading Javari Books...</p>
         </div>
       </main>
     )
@@ -307,27 +538,52 @@ export default function ConvertPage() {
   // Not logged in
   if (!user) {
     return (
-      <main className="min-h-screen bg-background py-12">
+      <main className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 py-12">
         <div className="container mx-auto px-4 max-w-lg">
-          <div className="bg-card border rounded-xl p-8 text-center">
-            <LogIn className="h-16 w-16 mx-auto mb-6 text-primary" />
-            <h1 className="text-2xl font-bold mb-4">Sign In Required</h1>
+          <div className="bg-card border rounded-2xl p-8 text-center shadow-xl">
+            <div className="w-20 h-20 mx-auto mb-6 bg-primary/10 rounded-full flex items-center justify-center">
+              <LogIn className="h-10 w-10 text-primary" />
+            </div>
+            <h1 className="text-2xl font-bold mb-4">Welcome to Javari Books</h1>
             <p className="text-muted-foreground mb-6">
-              Please sign in to your CR AudioViz AI account to use Javari Books.
+              Transform your eBooks into professional audiobooks, or transcribe audio into text. Sign in to get started.
             </p>
             <button
               onClick={handleLogin}
-              className="inline-flex items-center gap-2 px-8 py-4 bg-primary text-primary-foreground rounded-lg font-semibold hover:bg-primary/90"
+              className="w-full inline-flex items-center justify-center gap-2 px-8 py-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:bg-primary/90 transition-all transform hover:scale-[1.02]"
             >
               <LogIn className="h-5 w-5" />
               Sign In to Continue
             </button>
             <p className="text-sm text-muted-foreground mt-4">
               Don't have an account?{' '}
-              <a href="https://craudiovizai.com/signup" className="text-primary hover:underline">
+              <a href="https://craudiovizai.com/signup" className="text-primary hover:underline font-medium">
                 Sign up free
               </a>
             </p>
+            
+            {/* Features preview */}
+            <div className="mt-8 pt-8 border-t">
+              <p className="text-sm font-medium mb-4">What you can do:</p>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Headphones className="h-4 w-4 text-primary" />
+                  eBook to Audio
+                </div>
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <FileText className="h-4 w-4 text-primary" />
+                  Audio to Text
+                </div>
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Settings className="h-4 w-4 text-primary" />
+                  6 Voice Options
+                </div>
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Library className="h-4 w-4 text-primary" />
+                  Personal Library
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </main>
@@ -335,353 +591,618 @@ export default function ConvertPage() {
   }
 
   return (
-    <main className="min-h-screen bg-background py-12">
-      <div className="container mx-auto px-4 max-w-3xl">
-        {/* Header with Credit Balance */}
-        <div className="flex items-center justify-between mb-8">
+    <main className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5 py-8">
+      <div className="container mx-auto px-4 max-w-4xl">
+        {/* Header */}
+        <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
           <div>
-            <h1 className="text-3xl font-bold">Javari Books</h1>
-            <p className="text-muted-foreground">
+            <h1 className="text-3xl font-bold flex items-center gap-3">
+              <span className="bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+                Javari Books
+              </span>
+              {isAdmin && (
+                <span className="flex items-center gap-1 px-2 py-0.5 bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 rounded-full text-xs font-medium">
+                  <Crown className="h-3 w-3" />
+                  Admin
+                </span>
+              )}
+            </h1>
+            <p className="text-muted-foreground mt-1">
               Convert eBooks to audiobooks or transcribe audio to text
             </p>
           </div>
-          <div className="flex items-center gap-4">
-            {isAdmin && (
-              <div className="flex items-center gap-2 px-3 py-1 bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300 rounded-full text-sm">
-                <Crown className="h-4 w-4" />
-                Admin
-              </div>
-            )}
-            <div className="flex items-center gap-2 px-4 py-2 bg-primary/10 rounded-lg">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 px-4 py-2 bg-card border rounded-xl">
               <Coins className="h-5 w-5 text-primary" />
-              <span className="font-semibold">{isAdmin ? '∞' : creditBalance.toLocaleString()}</span>
+              <span className="font-bold text-lg">{isAdmin ? '∞' : creditBalance.toLocaleString()}</span>
               <span className="text-sm text-muted-foreground">credits</span>
             </div>
             <a 
               href="/library" 
-              className="flex items-center gap-2 px-4 py-2 border rounded-lg hover:bg-muted"
+              className="flex items-center gap-2 px-4 py-2 bg-card border rounded-xl hover:bg-muted transition-colors"
             >
               <Library className="h-5 w-5" />
-              My Library
+              <span className="hidden sm:inline">Library</span>
             </a>
+            <button
+              onClick={() => setShowRecent(!showRecent)}
+              className="flex items-center gap-2 px-4 py-2 bg-card border rounded-xl hover:bg-muted transition-colors"
+            >
+              <History className="h-5 w-5" />
+              <span className="hidden sm:inline">Recent</span>
+            </button>
           </div>
         </div>
 
-        {/* Insufficient Credits Warning (not for admins) */}
+        {/* Recent Conversions Panel */}
+        {showRecent && recentConversions.length > 0 && (
+          <div className="mb-6 bg-card border rounded-xl p-4">
+            <h3 className="font-semibold mb-3 flex items-center gap-2">
+              <History className="h-4 w-4" />
+              Recent Conversions
+            </h3>
+            <div className="space-y-2">
+              {recentConversions.slice(0, 5).map((conv) => (
+                <div key={conv.id} className="flex items-center justify-between p-2 bg-muted rounded-lg">
+                  <div className="flex items-center gap-2">
+                    {conv.type === 'audiobook' ? (
+                      <Headphones className="h-4 w-4 text-primary" />
+                    ) : (
+                      <FileText className="h-4 w-4 text-primary" />
+                    )}
+                    <span className="text-sm font-medium truncate max-w-[200px]">{conv.title}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(conv.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <a
+                    href={conv.downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-primary hover:underline"
+                  >
+                    Download
+                  </a>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Insufficient Credits Warning */}
         {!isAdmin && creditBalance < currentCost && (
-          <div className="mb-6 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
+          <div className="mb-6 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
             <div className="flex items-center gap-3">
-              <AlertCircle className="h-5 w-5 text-amber-500" />
-              <div>
+              <AlertCircle className="h-5 w-5 text-amber-500 flex-shrink-0" />
+              <div className="flex-1">
                 <p className="font-medium">Insufficient Credits</p>
                 <p className="text-sm text-muted-foreground">
-                  This conversion requires {currentCost} credits. You have {creditBalance}.{' '}
-                  <a href="/credits" className="text-primary hover:underline">Buy more credits</a>
+                  This conversion requires {currentCost} credits. You have {creditBalance}.
                 </p>
               </div>
+              <a 
+                href="https://craudiovizai.com/credits" 
+                className="px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600 transition-colors"
+              >
+                Buy Credits
+              </a>
             </div>
           </div>
         )}
 
         {/* Mode Toggle */}
-        <div className="flex justify-center gap-4 mb-8">
-          <button
-            onClick={() => { setMode('ebook-to-audio'); resetForm() }}
-            className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-all ${
-              mode === 'ebook-to-audio' 
-                ? 'bg-primary text-primary-foreground' 
-                : 'bg-muted hover:bg-muted/80'
-            }`}
-          >
-            <Headphones className="h-5 w-5" />
-            eBook → Audiobook
-            {!isAdmin && <span className="text-xs opacity-75">({CREDIT_COSTS.EBOOK_TO_AUDIO} cr)</span>}
-          </button>
-          <button
-            onClick={() => { setMode('audio-to-ebook'); resetForm() }}
-            className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-all ${
-              mode === 'audio-to-ebook' 
-                ? 'bg-primary text-primary-foreground' 
-                : 'bg-muted hover:bg-muted/80'
-            }`}
-          >
-            <FileAudio className="h-5 w-5" />
-            Audiobook → eBook
-            {!isAdmin && <span className="text-xs opacity-75">({CREDIT_COSTS.AUDIO_TO_EBOOK} cr)</span>}
-          </button>
+        <div className="flex justify-center mb-8">
+          <div className="inline-flex bg-muted p-1 rounded-xl">
+            <button
+              onClick={() => { setMode('ebook-to-audio'); resetForm() }}
+              className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-all ${
+                mode === 'ebook-to-audio' 
+                  ? 'bg-primary text-primary-foreground shadow-lg' 
+                  : 'hover:bg-background/50'
+              }`}
+            >
+              <Headphones className="h-5 w-5" />
+              eBook → Audio
+              {!isAdmin && (
+                <span className="text-xs opacity-75 bg-white/20 px-2 py-0.5 rounded-full">
+                  {QUALITY_OPTIONS[quality].credits} cr
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => { setMode('audio-to-ebook'); resetForm() }}
+              className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-all ${
+                mode === 'audio-to-ebook' 
+                  ? 'bg-primary text-primary-foreground shadow-lg' 
+                  : 'hover:bg-background/50'
+              }`}
+            >
+              <FileAudio className="h-5 w-5" />
+              Audio → eBook
+              {!isAdmin && (
+                <span className="text-xs opacity-75 bg-white/20 px-2 py-0.5 rounded-full">
+                  {CREDIT_COSTS.AUDIO_TO_EBOOK} cr
+                </span>
+              )}
+            </button>
+          </div>
         </div>
 
-        {/* SUCCESS RESULT */}
-        {result && result.downloadUrl && (
-          <div className="mb-8 bg-green-50 dark:bg-green-950 border-2 border-green-500 rounded-xl p-6 shadow-lg">
-            <div className="flex items-center gap-3 mb-4">
-              <CheckCircle className="h-8 w-8 text-green-500" />
-              <h3 className="text-xl font-bold text-green-700 dark:text-green-300">
-                🎉 Conversion Complete!
-              </h3>
-            </div>
-            
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4 text-sm bg-white dark:bg-gray-900 rounded-lg p-4">
-                {result.title && (
-                  <div><span className="text-muted-foreground">Title:</span> <span className="font-medium ml-2">{result.title}</span></div>
-                )}
-                {result.voice && (
-                  <div><span className="text-muted-foreground">Voice:</span> <span className="font-medium ml-2">{result.voice}</span></div>
-                )}
-                {result.duration && (
-                  <div><span className="text-muted-foreground">Duration:</span> <span className="font-medium ml-2">{result.duration}</span></div>
-                )}
-                {result.fileSize && (
-                  <div><span className="text-muted-foreground">Size:</span> <span className="font-medium ml-2">{(result.fileSize / 1024 / 1024).toFixed(2)} MB</span></div>
-                )}
-              </div>
-              
-              <div className="bg-green-100 dark:bg-green-900 rounded-lg p-4">
-                <p className="text-sm font-medium mb-3 text-green-800 dark:text-green-200">
-                  ✅ Saved to your library! Download below:
+        {/* Main Content */}
+        <div className="bg-card border rounded-2xl p-6 shadow-lg">
+          {/* eBook to Audio Mode */}
+          {mode === 'ebook-to-audio' && !result && (
+            <div className="space-y-6">
+              {/* File Drop Zone */}
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${
+                  dragOver 
+                    ? 'border-primary bg-primary/5' 
+                    : 'border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/50'
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".txt,.md,.docx,.pdf"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <FileUp className={`h-12 w-12 mx-auto mb-4 ${dragOver ? 'text-primary' : 'text-muted-foreground'}`} />
+                <p className="font-medium mb-1">
+                  {uploadedFile ? uploadedFile.name : 'Drop your file here or click to upload'}
                 </p>
-                <div className="flex gap-4 items-center flex-wrap">
-                  <a
-                    href={result.downloadUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    download
-                    className="inline-flex items-center gap-2 px-8 py-4 bg-green-600 text-white rounded-lg font-bold text-lg hover:bg-green-700 shadow-md"
+                <p className="text-sm text-muted-foreground">
+                  Supports TXT, MD, DOCX, PDF
+                </p>
+                {uploadedFile && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setUploadedFile(null); setText(''); }}
+                    className="mt-3 text-sm text-red-500 hover:underline flex items-center gap-1 mx-auto"
                   >
-                    <Download className="h-6 w-6" />
-                    DOWNLOAD
-                  </a>
-                  <a
-                    href="/library"
-                    className="inline-flex items-center gap-2 px-6 py-4 border-2 border-green-600 text-green-600 rounded-lg font-medium hover:bg-green-50"
-                  >
-                    <Library className="h-5 w-5" />
-                    View in Library
-                  </a>
-                </div>
-                
-                {mode === 'ebook-to-audio' && (
-                  <div className="mt-4">
-                    <p className="text-sm text-muted-foreground mb-2">Or listen here:</p>
-                    <audio controls src={result.downloadUrl} className="w-full" preload="metadata" />
-                  </div>
+                    <X className="h-3 w-3" /> Remove file
+                  </button>
                 )}
               </div>
-              
+
+              {/* Or Paste Text */}
+              <div className="relative">
+                <div className="absolute left-4 top-3 text-xs text-muted-foreground">
+                  Or paste your text directly:
+                </div>
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="Paste your eBook content here..."
+                  className="w-full h-48 pt-8 px-4 pb-4 border rounded-xl resize-none focus:ring-2 focus:ring-primary focus:border-primary bg-background"
+                />
+                <div className="absolute bottom-3 right-3 flex items-center gap-3 text-sm text-muted-foreground">
+                  <span>{wordCount.toLocaleString()} words</span>
+                  <span>•</span>
+                  <span className="flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    ~{estimatedDuration}
+                  </span>
+                </div>
+              </div>
+
+              {/* Title */}
+              <div>
+                <label className="text-sm font-medium mb-2 block">Title</label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Enter audiobook title..."
+                  className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary focus:border-primary bg-background"
+                />
+              </div>
+
+              {/* Voice & Quality Selection */}
+              <div className="grid md:grid-cols-2 gap-4">
+                {/* Voice Selector */}
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Voice</label>
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowVoiceSelector(!showVoiceSelector)}
+                      className="w-full flex items-center justify-between px-4 py-3 border rounded-xl bg-background hover:bg-muted transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                          <Volume2 className="h-4 w-4 text-primary" />
+                        </div>
+                        <div className="text-left">
+                          <p className="font-medium">{VOICES[voice].label}</p>
+                          <p className="text-xs text-muted-foreground">{VOICES[voice].description}</p>
+                        </div>
+                      </div>
+                      <ChevronDown className={`h-4 w-4 transition-transform ${showVoiceSelector ? 'rotate-180' : ''}`} />
+                    </button>
+                    
+                    {showVoiceSelector && (
+                      <div className="absolute z-10 w-full mt-2 bg-card border rounded-xl shadow-xl overflow-hidden">
+                        {Object.entries(VOICES).map(([key, val]) => (
+                          <button
+                            key={key}
+                            onClick={() => { setVoice(key as Voice); setShowVoiceSelector(false) }}
+                            className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-muted transition-colors ${
+                              voice === key ? 'bg-primary/10' : ''
+                            }`}
+                          >
+                            <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                              <Volume2 className="h-4 w-4 text-primary" />
+                            </div>
+                            <div className="text-left">
+                              <p className="font-medium">{val.label}</p>
+                              <p className="text-xs text-muted-foreground">{val.description}</p>
+                            </div>
+                            {voice === key && (
+                              <Check className="h-4 w-4 text-primary ml-auto" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Quality Selector */}
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Quality</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {Object.entries(QUALITY_OPTIONS).map(([key, val]) => (
+                      <button
+                        key={key}
+                        onClick={() => setQuality(key as Quality)}
+                        className={`px-4 py-3 border rounded-xl transition-all ${
+                          quality === key 
+                            ? 'border-primary bg-primary/10 ring-2 ring-primary' 
+                            : 'hover:border-primary/50 hover:bg-muted'
+                        }`}
+                      >
+                        <p className="font-medium">{val.label}</p>
+                        {!isAdmin && (
+                          <p className="text-xs text-muted-foreground">{val.credits} credits</p>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Convert Button */}
+              <button
+                onClick={handleEbookToAudio}
+                disabled={loading || !text || (!isAdmin && creditBalance < currentCost)}
+                className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:scale-[1.01]"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    {progressText || 'Converting...'}
+                  </>
+                ) : (
+                  <>
+                    <Zap className="h-5 w-5" />
+                    Convert to Audiobook
+                    {!isAdmin && <span className="opacity-75">({currentCost} credits)</span>}
+                  </>
+                )}
+              </button>
+
+              {/* Progress Bar */}
+              {loading && progress > 0 && (
+                <div className="space-y-2">
+                  <div className="h-2 bg-muted rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-primary transition-all duration-300"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  <p className="text-sm text-center text-muted-foreground">{progressText}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Audio to eBook Mode */}
+          {mode === 'audio-to-ebook' && !result && (
+            <div className="space-y-6">
+              {/* Audio Upload */}
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={() => audioInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${
+                  dragOver 
+                    ? 'border-primary bg-primary/5' 
+                    : audioFile 
+                      ? 'border-green-500 bg-green-50 dark:bg-green-950/20' 
+                      : 'border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/50'
+                }`}
+              >
+                <input
+                  ref={audioInputRef}
+                  type="file"
+                  accept="audio/*"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                {audioFile ? (
+                  <>
+                    <CheckCircle className="h-12 w-12 mx-auto mb-4 text-green-500" />
+                    <p className="font-medium mb-1">{audioFile.name}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {(audioFile.size / 1024 / 1024).toFixed(2)} MB
+                    </p>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setAudioFile(null) }}
+                      className="mt-3 text-sm text-red-500 hover:underline flex items-center gap-1 mx-auto"
+                    >
+                      <X className="h-3 w-3" /> Remove file
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <FileAudio className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                    <p className="font-medium mb-1">Drop your audio file here or click to upload</p>
+                    <p className="text-sm text-muted-foreground">
+                      Supports MP3, WAV, M4A, OGG, WebM
+                    </p>
+                  </>
+                )}
+              </div>
+
+              {/* Title & Format */}
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Title</label>
+                  <input
+                    type="text"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="Enter eBook title..."
+                    className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary focus:border-primary bg-background"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Output Format</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['txt', 'md', 'docx'] as const).map((fmt) => (
+                      <button
+                        key={fmt}
+                        onClick={() => setOutputFormat(fmt)}
+                        className={`px-4 py-3 border rounded-xl font-medium uppercase transition-all ${
+                          outputFormat === fmt 
+                            ? 'border-primary bg-primary/10 ring-2 ring-primary' 
+                            : 'hover:border-primary/50 hover:bg-muted'
+                        }`}
+                      >
+                        .{fmt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Transcribe Button */}
+              <button
+                onClick={handleAudioToEbook}
+                disabled={loading || !audioFile || (!isAdmin && creditBalance < CREDIT_COSTS.AUDIO_TO_EBOOK)}
+                className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:scale-[1.01]"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    {progressText || 'Transcribing...'}
+                  </>
+                ) : (
+                  <>
+                    <Zap className="h-5 w-5" />
+                    Transcribe to eBook
+                    {!isAdmin && <span className="opacity-75">({CREDIT_COSTS.AUDIO_TO_EBOOK} credits)</span>}
+                  </>
+                )}
+              </button>
+
+              {/* Progress Bar */}
+              {loading && progress > 0 && (
+                <div className="space-y-2">
+                  <div className="h-2 bg-muted rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-primary transition-all duration-300"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  <p className="text-sm text-center text-muted-foreground">{progressText}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Result Display */}
+          {result && (
+            <div className="space-y-6">
+              {/* Success Header */}
+              <div className="text-center">
+                <div className="w-16 h-16 mx-auto mb-4 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center">
+                  <CheckCircle className="h-8 w-8 text-green-500" />
+                </div>
+                <h2 className="text-2xl font-bold mb-2">
+                  {mode === 'ebook-to-audio' ? 'Audiobook Created!' : 'eBook Created!'}
+                </h2>
+                <p className="text-muted-foreground">
+                  Your file has been saved to your library
+                </p>
+              </div>
+
+              {/* File Info Card */}
+              <div className="bg-muted/50 rounded-xl p-4">
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center flex-shrink-0">
+                    {mode === 'ebook-to-audio' ? (
+                      <Headphones className="h-6 w-6 text-primary" />
+                    ) : (
+                      <FileText className="h-6 w-6 text-primary" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-semibold truncate">{result.title}</h3>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground mt-1">
+                      {result.voice && <span>Voice: {result.voice}</span>}
+                      {result.duration && <span>Duration: {result.duration}</span>}
+                      {result.wordCount && <span>{result.wordCount.toLocaleString()} words</span>}
+                      {result.fileSize && <span>{(result.fileSize / 1024 / 1024).toFixed(2)} MB</span>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Audio Player (for audiobooks) */}
+              {mode === 'ebook-to-audio' && result.downloadUrl && (
+                <div className="bg-muted rounded-xl p-4">
+                  <audio
+                    ref={audioRef}
+                    src={result.downloadUrl}
+                    onTimeUpdate={handleTimeUpdate}
+                    onLoadedMetadata={handleLoadedMetadata}
+                    onEnded={() => setIsPlaying(false)}
+                  />
+                  
+                  {/* Controls */}
+                  <div className="flex items-center gap-4">
+                    <button
+                      onClick={() => audioRef.current && (audioRef.current.currentTime -= 10)}
+                      className="p-2 hover:bg-background rounded-lg transition-colors"
+                    >
+                      <SkipBack className="h-5 w-5" />
+                    </button>
+                    <button
+                      onClick={togglePlayback}
+                      className="p-3 bg-primary text-primary-foreground rounded-full hover:bg-primary/90 transition-colors"
+                    >
+                      {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6" />}
+                    </button>
+                    <button
+                      onClick={() => audioRef.current && (audioRef.current.currentTime += 10)}
+                      className="p-2 hover:bg-background rounded-lg transition-colors"
+                    >
+                      <SkipForward className="h-5 w-5" />
+                    </button>
+                    
+                    {/* Progress */}
+                    <div className="flex-1">
+                      <input
+                        type="range"
+                        min="0"
+                        max={duration || 100}
+                        value={currentTime}
+                        onChange={handleSeek}
+                        className="w-full accent-primary"
+                      />
+                      <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                        <span>{formatTime(currentTime)}</span>
+                        <span>{formatTime(duration)}</span>
+                      </div>
+                    </div>
+                    
+                    {/* Speed */}
+                    <button
+                      onClick={changeSpeed}
+                      className="px-2 py-1 text-sm font-medium bg-background rounded-lg hover:bg-muted transition-colors"
+                    >
+                      {playbackSpeed}x
+                    </button>
+                    
+                    {/* Volume */}
+                    <button
+                      onClick={toggleMute}
+                      className="p-2 hover:bg-background rounded-lg transition-colors"
+                    >
+                      {volume === 0 ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap gap-3">
+                <a
+                  href={result.downloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-primary text-primary-foreground rounded-xl font-semibold hover:bg-primary/90 transition-colors"
+                >
+                  <Download className="h-5 w-5" />
+                  Download
+                </a>
+                <button
+                  onClick={() => result.downloadUrl && copyToClipboard(result.downloadUrl)}
+                  className="flex items-center justify-center gap-2 px-6 py-3 border rounded-xl font-medium hover:bg-muted transition-colors"
+                >
+                  {copied ? <Check className="h-5 w-5 text-green-500" /> : <Copy className="h-5 w-5" />}
+                  {copied ? 'Copied!' : 'Copy Link'}
+                </button>
+                <a
+                  href="/library"
+                  className="flex items-center justify-center gap-2 px-6 py-3 border rounded-xl font-medium hover:bg-muted transition-colors"
+                >
+                  <Library className="h-5 w-5" />
+                  Library
+                </a>
+              </div>
+
+              {/* Create Another */}
               <button
                 onClick={resetForm}
-                className="w-full py-3 border-2 border-green-500 text-green-600 rounded-lg font-medium hover:bg-green-50"
+                className="w-full flex items-center justify-center gap-2 px-6 py-3 border rounded-xl font-medium hover:bg-muted transition-colors"
               >
-                Start New Conversion
+                <Sparkles className="h-5 w-5" />
+                Create Another
               </button>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Error */}
-        {error && (
-          <div className="mb-8 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-xl p-6">
-            <div className="flex items-center gap-3 mb-2">
-              <AlertCircle className="h-6 w-6 text-red-500" />
-              <h3 className="text-lg font-semibold">Error</h3>
-            </div>
-            <p className="text-red-600 dark:text-red-400">{error}</p>
-          </div>
-        )}
-
-        {/* Loading */}
-        {loading && (
-          <div className="mb-8 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-xl p-6">
-            <div className="flex items-center gap-3">
-              <Loader2 className="h-6 w-6 text-blue-500 animate-spin" />
-              <div>
-                <h3 className="font-semibold">Processing...</h3>
-                {progress && <p className="text-sm text-muted-foreground">{progress}</p>}
-                <p className="text-xs text-muted-foreground mt-1">
-                  This may take several minutes. Your file will be saved to your library when complete.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Forms - Only show when no result */}
-        {!result && (
-          <>
-            {mode === 'ebook-to-audio' && (
-              <div className="bg-card border rounded-xl p-8">
-                <h2 className="text-xl font-bold mb-6">Convert eBook to Audiobook</h2>
-
-                <div className="space-y-6">
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Title (optional)</label>
-                    <input
-                      type="text"
-                      value={title}
-                      onChange={(e) => setTitle(e.target.value)}
-                      placeholder="Enter a title for your audiobook"
-                      className="w-full px-4 py-3 border rounded-lg bg-background"
-                      disabled={loading}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Text Content</label>
-                    <textarea
-                      value={text}
-                      onChange={(e) => setText(e.target.value)}
-                      placeholder="Paste your eBook text here..."
-                      rows={12}
-                      className="w-full px-4 py-3 border rounded-lg bg-background resize-y"
-                      disabled={loading}
-                    />
-                    <p className="text-sm text-muted-foreground mt-1">
-                      {wordCount.toLocaleString()} words
-                      {wordCount > 0 && ` • Est. ${Math.ceil(wordCount / 150)} min audio`}
+          {/* Error Display */}
+          {error && (
+            <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-xl p-4">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-medium text-red-700 dark:text-red-300">Conversion Failed</p>
+                  <p className="text-sm text-red-600 dark:text-red-400 mt-1">{error}</p>
+                  {!isAdmin && (
+                    <p className="text-sm text-muted-foreground mt-2">
+                      Your credits have been automatically refunded.
                     </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Voice</label>
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                      {(Object.entries(VOICES) as [Voice, string][]).map(([key, label]) => (
-                        <button
-                          key={key}
-                          onClick={() => setVoice(key)}
-                          disabled={loading}
-                          className={`px-4 py-3 rounded-lg border transition-all ${
-                            voice === key 
-                              ? 'border-primary bg-primary/10 text-primary' 
-                              : 'hover:border-primary/50'
-                          } disabled:opacity-50`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={handleEbookToAudio}
-                    disabled={loading || !text || (!isAdmin && creditBalance < CREDIT_COSTS.EBOOK_TO_AUDIO)}
-                    className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-primary text-primary-foreground rounded-lg font-semibold text-lg hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {loading ? (
-                      <>
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                        Converting...
-                      </>
-                    ) : (
-                      <>
-                        <Headphones className="h-5 w-5" />
-                        Convert to Audiobook {isAdmin ? '(Admin - Free)' : `(${CREDIT_COSTS.EBOOK_TO_AUDIO} credits)`}
-                      </>
-                    )}
-                  </button>
+                  )}
                 </div>
               </div>
-            )}
-
-            {mode === 'audio-to-ebook' && (
-              <div className="bg-card border rounded-xl p-8">
-                <h2 className="text-xl font-bold mb-6">Convert Audiobook to eBook</h2>
-
-                <div className="space-y-6">
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Title (optional)</label>
-                    <input
-                      type="text"
-                      value={title}
-                      onChange={(e) => setTitle(e.target.value)}
-                      placeholder="Enter title for the transcribed book"
-                      className="w-full px-4 py-3 border rounded-lg bg-background"
-                      disabled={loading}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Audio File</label>
-                    <div
-                      onClick={() => !loading && fileInputRef.current?.click()}
-                      className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer hover:border-primary transition-colors ${loading ? 'opacity-50' : ''}`}
-                    >
-                      <input
-                        type="file"
-                        ref={fileInputRef}
-                        onChange={(e) => setAudioFile(e.target.files?.[0] || null)}
-                        accept="audio/*"
-                        className="hidden"
-                        disabled={loading}
-                      />
-                      {audioFile ? (
-                        <div>
-                          <FileAudio className="h-12 w-12 mx-auto mb-3 text-primary" />
-                          <p className="font-medium">{audioFile.name}</p>
-                          <p className="text-sm text-muted-foreground">
-                            {(audioFile.size / (1024 * 1024)).toFixed(2)} MB
-                          </p>
-                        </div>
-                      ) : (
-                        <div>
-                          <Upload className="h-12 w-12 mx-auto mb-3 text-muted-foreground" />
-                          <p className="text-muted-foreground">Click to upload audio file</p>
-                          <p className="text-sm text-muted-foreground mt-1">MP3, WAV, M4A up to 25MB</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Output Format</label>
-                    <div className="flex gap-3">
-                      {(['txt', 'md'] as const).map(fmt => (
-                        <button
-                          key={fmt}
-                          onClick={() => setOutputFormat(fmt)}
-                          disabled={loading}
-                          className={`flex-1 px-4 py-2 rounded-lg border transition-all uppercase ${
-                            outputFormat === fmt 
-                              ? 'border-primary bg-primary/10 text-primary' 
-                              : 'hover:border-primary/50'
-                          } disabled:opacity-50`}
-                        >
-                          {fmt}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={handleAudioToEbook}
-                    disabled={loading || !audioFile || (!isAdmin && creditBalance < CREDIT_COSTS.AUDIO_TO_EBOOK)}
-                    className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-primary text-primary-foreground rounded-lg font-semibold text-lg hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {loading ? (
-                      <>
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                        Transcribing...
-                      </>
-                    ) : (
-                      <>
-                        <FileAudio className="h-5 w-5" />
-                        Transcribe to eBook {isAdmin ? '(Admin - Free)' : `(${CREDIT_COSTS.AUDIO_TO_EBOOK} credits)`}
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            )}
-          </>
-        )}
+              <button
+                onClick={resetForm}
+                className="mt-4 w-full px-4 py-2 bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 rounded-lg font-medium hover:bg-red-200 dark:hover:bg-red-900 transition-colors"
+              >
+                Try Again
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Footer */}
         <div className="mt-8 text-center text-sm text-muted-foreground">
-          Logged in as {user.email}
-          {isAdmin && ' (Platform Admin)'} •{' '}
-          <button onClick={() => CentralAuth.signOut().then(() => window.location.reload())} className="text-primary hover:underline">
-            Sign Out
-          </button>
+          <p>
+            Powered by OpenAI TTS • Part of the{' '}
+            <a href="https://craudiovizai.com" className="text-primary hover:underline">
+              CR AudioViz AI
+            </a>{' '}
+            ecosystem
+          </p>
         </div>
       </div>
     </main>
