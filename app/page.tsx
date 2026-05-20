@@ -14,7 +14,7 @@ const ACTIONS = [
   { id: 'speed_read_guide',     label: '⚡ Speed Reading',       desc: 'Techniques to read faster and retain more', prompt: (v: V) => `Create a personalized speed reading and retention guide for someone who currently reads ${v.currentSpeed || '200-250'} words per minute. Goal: ${v.goal || 'double reading speed'}. Time available: ${v.timeAvailable || '15 minutes per day'}. Include: techniques, exercises, weekly training plan, retention strategies, and book recommendations for practice.` },
 ]
 
-type V = Record<string, string>
+interface V { [key: string]: string }
 
 const FIELDS: Record<string, Array<{ id: string; label: string; placeholder: string; type?: string }>> = {
   book_recommendations: [{ id: 'genres', label: 'Favorite Genres', placeholder: 'Literary fiction, sci-fi, mystery...' }, { id: 'lastBook', label: 'Last Book You Loved', placeholder: 'The Name of the Wind, Project Hail Mary...' }, { id: 'mood', label: 'Current Mood', placeholder: 'Adventurous, thoughtful, escapist...' }],
@@ -28,7 +28,7 @@ const FIELDS: Record<string, Array<{ id: string; label: string; placeholder: str
 
 export default function BooksPage() {
   const [action, setAction] = useState(ACTIONS[0])
-  const [values, setValues] = useState<V>({})
+  const [values, setValues] = useState({})
   const [output, setOutput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
