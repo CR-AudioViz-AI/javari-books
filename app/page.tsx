@@ -3,7 +3,7 @@
 // CR AudioViz AI, LLC · EIN 39-3646201 · May 2026
 'use client'
 import { useState } from 'react'
-import { ACTIONS, FIELDS } from '@/lib/tool-data'
+import { ACTIONS, getFields } from '@/lib/tool-data'
 
 
 export default function BooksPage() {
@@ -30,7 +30,7 @@ export default function BooksPage() {
     setLoading(false)
   }
 
-  const fields = FIELDS[action.id] || []
+  const fields = getFields(action.id) || []
 
   return (
     <div style={{ background: '#08060f', minHeight: '100vh', color: '#e2ddf0', fontFamily: 'Lora, Georgia, serif' }}>
