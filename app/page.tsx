@@ -53,7 +53,7 @@ export default function BooksPage() {
   const fields = FIELDS[action.id] || []
 
   return (
-    <div style={{ background: '#08060f', minHeight: '100vh', color: '#e2ddf0', fontFamily: 'Lora, "Georgia", serif' }}>
+    <div style={{ background: '#08060f', minHeight: '100vh', color: '#e2ddf0', fontFamily: 'Lora, Georgia, serif' }}>
       <nav style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100, background: 'rgba(8,6,15,0.97)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(139,92,246,0.15)', height: 60, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 28px' }}>
         <a href="https://craudiovizai.com" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none' }}>
           <span style={{ fontSize: 22 }}>📚</span>
