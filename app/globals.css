@@ -1,1 +1,65 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
+/* globals.css — CR AudioViz AI Official Design System
+   Navy #1E3A5F | Candy Apple Red #FF0800 | Cyan #00B4D8
+   VERSION 3.0 FINAL — January 2026 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Brand Colors */
+  --cr-navy:      #1E3A5F;
+  --cr-navy-dark: #172D48;
+  --cr-navy-deep: #040912;
+  --cr-red:       #FF0800;  /* Candy Apple Red */
+  --cr-red-dark:  #CC0600;
+  --cr-cyan:      #00B4D8;
+  --cr-cyan-dark: #0090AD;
+  --cr-cyan-light:#33BFDF;
+
+  /* Semantic */
+  --cr-primary:   var(--cr-navy);
+  --cr-accent:    var(--cr-red);
+  --cr-secondary: var(--cr-cyan);
+  --cr-success:   var(--cr-cyan);
+  --cr-error:     var(--cr-red);
+  --cr-info:      var(--cr-cyan);
+  --cr-warning:   #F59E0B;
+
+  /* Text */
+  --cr-text-primary:   #172D48;
+  --cr-text-secondary: #4B5563;
+  --cr-text-tertiary:  #6B7280;
+  --cr-text-disabled:  #9CA3AF;
+
+  /* Backgrounds */
+  --cr-bg-primary:   #FFFFFF;
+  --cr-bg-secondary: #F9FAFB;
+  --cr-bg-tertiary:  #F3F4F6;
+
+  /* Dark Mode Backgrounds */
+  --cr-bg-dark:          #040912;
+  --cr-bg-dark-secondary:#0F1F32;
+  --cr-bg-dark-tertiary: #172D48;
+
+  /* Borders */
+  --cr-border:       #E5E7EB;
+  --cr-border-focus: var(--cr-cyan);
+
+  /* Gradients */
+  --cr-gradient-primary: linear-gradient(135deg, #1E3A5F 0%, #00B4D8 100%);
+  --cr-gradient-accent:  linear-gradient(135deg, #1E3A5F 0%, #FF0800 100%);
+  --cr-gradient-hero:    linear-gradient(135deg, #1E3A5F 0%, #00B4D8 50%, #FF0800 100%);
+
+  /* Logo shadow */
+  --cr-logo-shadow: 0 4px 14px 0 rgba(0,180,216,0.39);
+}
+
+.dark {
+  --cr-text-primary:   #F9FAFB;
+  --cr-text-secondary: #D1D5DB;
+  --cr-text-tertiary:  #9CA3AF;
+  --cr-bg-primary:     #040912;
+  --cr-bg-secondary:   #0F1F32;
+  --cr-bg-tertiary:    #172D48;
+  --cr-border:         #172D48;
+}
