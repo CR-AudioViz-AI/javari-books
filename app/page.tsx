@@ -1,88 +1,109 @@
-'use client'
-import { useState, useRef } from 'react'
-import { getActions, getFields } from '@/lib/tool-data'
+// app/page.tsx - Javari Books — AI Writing Suite
+// CR AudioViz AI · EIN 39-3646201 · May 2026
+"use client";
+import { useState } from "react";
 
-export default function BooksPage() {
-  const actions = getActions()
-  const [actionId, setActionId] = useState(actions[0].id)
-  const [values, setValues] = useState({})
-  const [output, setOutput] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [copied, setCopied] = useState(false)
-  function setV(id, val) { setValues(p => ({ ...p, [id]: val })) }
-  async function generate() {
-    const action = actions.find(a => a.id === actionId)
-    if (!action) return
-    setLoading(true); setError(''); setOutput('')
+const TOOLS = [
+  { href:"/outline",      icon:"📋", label:"Book Outline",       desc:"Full chapter-by-chapter outline in minutes" },
+  { href:"/chapter",      icon:"✍️",  label:"Chapter Writer",     desc:"Write compelling chapters with AI" },
+  { href:"/blurb",        icon:"📖", label:"Back Cover Blurb",   desc:"Hook readers with the perfect description" },
+  { href:"/query-letter", icon:"📬", label:"Query Letter",       desc:"Get literary agent attention" },
+  { href:"/title",        icon:"💡", label:"Title Generator",    desc:"Find the perfect title and subtitle" },
+  { href:"/synopsis",     icon:"📝", label:"Synopsis Writer",    desc:"One-page synopsis for publishers" },
+];
+
+const GENRES = ["Fiction","Non-Fiction","Memoir","Business","Self-Help","Children","Romance","Thriller","Fantasy","Sci-Fi"];
+
+export default function BooksHome() {
+  const [prompt, setPrompt] = useState("");
+  const [genre, setGenre] = useState("Fiction");
+  const [result, setResult] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function quickOutline() {
+    if (!prompt.trim()) return;
+    setLoading(true); setResult("");
     try {
-      const res = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: actionId, input: action.buildPrompt(values) }) })
-      const data = await res.json()
-      if (!res.ok || data.error) throw new Error(data.error || 'Failed')
-      setOutput(data.result || '')
-    } catch (e) { setError(e.message || 'Error') }
-    setLoading(false)
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role:"user", content:`Write a 10-chapter outline for a ${genre} book about: ${prompt}. Include chapter titles and 2-3 sentence descriptions of what happens in each chapter.` }],
+          stream: false,
+          systemOverride: "You are a professional book editor and bestselling author. Create compelling, marketable book outlines with strong narrative arcs and memorable characters."
+        }),
+      });
+      const data = await res.json();
+      setResult(data?.choices?.[0]?.message?.content || data?.content || "Error.");
+    } catch { setResult("Connection error."); }
+    setLoading(false);
   }
-  const action = actions.find(a => a.id === actionId)
-  const fields = getFields(actionId)
-  const C = '#a78bfa'
+
   return (
-    <div style={{ background: '#08060f', minHeight: '100vh', color: '#e2ddf0', fontFamily: 'Georgia, serif' }}>
-      <nav style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100, background: 'rgba(8,6,15,0.97)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(139,92,246,0.15)', height: 60, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 28px' }}>
-        <a href="https://craudiovizai.com" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none' }}><span style={{ fontSize: 22 }}>📚</span><span style={{ fontWeight: 700, fontSize: 16, color: C }}>Javari Books</span></a>
-        <a href="https://craudiovizai.com/auth/signup" style={{ background: 'linear-gradient(135deg,#7c3aed,#5b21b6)', color: 'white', borderRadius: 8, padding: '8px 18px', fontSize: 13, fontWeight: 700, textDecoration: 'none', fontFamily: 'system-ui' }}>Free Access</a>
+    <div style={{ minHeight:"100vh", background:"#040912", color:"#e2e8f0", fontFamily:"system-ui" }}>
+      <nav style={{ background:"#1E3A5F", padding:"0 20px", height:52, display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:100 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:20 }}>📚</span>
+          <span style={{ fontWeight:800, color:"#00B4D8", fontSize:15 }}>Javari Books</span>
+          <span style={{ color:"#374151", fontSize:11 }}>· AI Writing Suite</span>
+        </div>
+        <a href="https://craudiovizai.com/auth/signup" style={{ background:"#FF0800", color:"#fff", borderRadius:7, padding:"5px 14px", fontSize:12, fontWeight:700, textDecoration:"none" }}>Sign Up Free</a>
       </nav>
-      <div style={{ height: 60 }} />
-      <section style={{ textAlign: 'center', padding: '48px 24px 32px', maxWidth: 680, margin: '0 auto' }}>
-        <div style={{ fontSize: 48, marginBottom: 10 }}>📚</div>
-        <h1 style={{ fontSize: 'clamp(24px,4vw,42px)', fontWeight: 700, margin: '0 0 12px', letterSpacing: '-0.02em', lineHeight: 1.15 }}>Your AI <span style={{ color: C }}>Literary Guide</span></h1>
-        <p style={{ fontSize: 16, color: '#6b7280', maxWidth: 460, margin: '0 auto', lineHeight: 1.7, fontFamily: 'system-ui' }}>Book recommendations, summaries, author research, reading lists. <strong style={{ color: C }}>50 free credits/month.</strong></p>
-      </section>
-      <section style={{ maxWidth: 980, margin: '0 auto', padding: '0 20px 80px', display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.5fr)', gap: 20 }}>
-        <div>
-          <div style={{ background: '#110e1e', border: '1px solid rgba(139,92,246,0.12)', borderRadius: 14, overflow: 'hidden', marginBottom: 16 }}>
-            {actions.map(a => (
-              <button key={a.id} onClick={() => { setActionId(a.id); setValues({}); setOutput('') }}
-                style={{ width: '100%', textAlign: 'left', padding: '11px 16px', background: actionId === a.id ? 'rgba(139,92,246,0.1)' : 'transparent', borderLeft: actionId === a.id ? '3px solid ' + C : '3px solid transparent', border: 'none', cursor: 'pointer', borderBottom: '1px solid rgba(139,92,246,0.06)', display: 'block' }}>
-                <div style={{ fontWeight: 600, fontSize: 13, color: actionId === a.id ? '#c4b5fd' : '#9ca3af', fontFamily: 'system-ui' }}>{a.label}</div>
-                <div style={{ fontSize: 11, color: '#374151', marginTop: 2, fontFamily: 'system-ui' }}>{a.desc}</div>
-              </button>
-            ))}
-          </div>
-          <div style={{ background: '#110e1e', border: '1px solid rgba(139,92,246,0.12)', borderRadius: 14, padding: '16px' }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: '#374151', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 14, fontFamily: 'system-ui' }}>{fields.label}</div>
-            {(fields.fields || []).map(f => (
-              <div key={f.id} style={{ marginBottom: 12 }}>
-                <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 5, fontWeight: 500, fontFamily: 'system-ui' }}>{f.label}</label>
-                <input value={values[f.id] || ''} onChange={e => setV(f.id, e.target.value)} placeholder={f.placeholder}
-                  style={{ width: '100%', background: '#08060f', border: '1px solid rgba(139,92,246,0.2)', borderRadius: 8, padding: '9px 12px', color: '#e2ddf0', fontSize: 13, boxSizing: 'border-box', outline: 'none', fontFamily: 'system-ui' }} />
-              </div>
-            ))}
-            <button onClick={generate} disabled={loading}
-              style={{ width: '100%', background: loading ? '#1a1428' : 'linear-gradient(135deg,#7c3aed,#5b21b6)', color: loading ? '#374151' : 'white', border: 'none', borderRadius: 10, padding: '12px', fontSize: 14, fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer', marginTop: 4, fontFamily: 'system-ui' }}>
-              {loading ? 'Researching...' : 'Generate ' + (action ? action.label : '')}
+
+      <section style={{ background:"linear-gradient(135deg,#1E3A5F,#040912)", padding:"64px 24px 56px", textAlign:"center" }}>
+        <div style={{ maxWidth:640, margin:"0 auto" }}>
+          <h1 style={{ fontSize:"clamp(26px,4vw,48px)", fontWeight:900, color:"#fff", margin:"0 0 14px", lineHeight:1.05 }}>
+            Write Your Book with<br /><span style={{ color:"#00B4D8" }}>AI That Understands Story</span>
+          </h1>
+          <p style={{ color:"rgba(255,255,255,0.7)", fontSize:15, lineHeight:1.65, margin:"0 0 32px" }}>
+            From first idea to published book. Outlines, chapters, blurbs, query letters — everything an author needs.
+          </p>
+          <div style={{ display:"flex", gap:8, maxWidth:560, margin:"0 auto", flexWrap:"wrap", justifyContent:"center" }}>
+            <select value={genre} onChange={e=>setGenre(e.target.value)}
+              style={{ background:"rgba(15,31,50,0.9)", border:"1px solid rgba(0,180,216,0.3)", borderRadius:8, padding:"12px 14px", color:"#e2e8f0", fontSize:14, outline:"none", fontFamily:"system-ui" }}>
+              {GENRES.map(g=><option key={g}>{g}</option>)}
+            </select>
+            <input value={prompt} onChange={e=>setPrompt(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&quickOutline()}
+              placeholder="Describe your book idea..."
+              style={{ flex:1, minWidth:220, background:"rgba(15,31,50,0.9)", border:"1px solid rgba(0,180,216,0.3)", borderRadius:8, padding:"12px 14px", color:"#e2e8f0", fontSize:14, outline:"none", fontFamily:"system-ui" }} />
+            <button onClick={quickOutline} disabled={loading||!prompt.trim()}
+              style={{ background: loading||!prompt.trim()?"#0F1F32":"#FF0800", color: loading||!prompt.trim()?"#374151":"#fff", border:"none", borderRadius:8, padding:"12px 20px", fontSize:14, fontWeight:700, cursor: loading||!prompt.trim()?"not-allowed":"pointer", fontFamily:"system-ui", whiteSpace:"nowrap" }}>
+              {loading?"Writing...":"📋 Quick Outline"}
             </button>
-            {error && <p style={{ color: '#ef4444', fontSize: 12, marginTop: 8, fontFamily: 'system-ui' }}>⚠ {error}</p>}
           </div>
-        </div>
-        <div style={{ background: '#110e1e', border: '1px solid rgba(139,92,246,0.12)', borderRadius: 14, overflow: 'hidden', position: 'sticky', top: 80, alignSelf: 'start' }}>
-          <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(139,92,246,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: '#374151', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'system-ui' }}>Results</span>
-            {output && <button onClick={() => { navigator.clipboard.writeText(output); setCopied(true); setTimeout(() => setCopied(false), 2000) }} style={{ background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)', color: copied ? C : '#6b7280', borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer', fontFamily: 'system-ui' }}>{copied ? 'Copied!' : 'Copy'}</button>}
-          </div>
-          {output ? (
-            <textarea value={output} readOnly style={{ width: '100%', background: 'transparent', border: 'none', padding: '18px', color: '#e2ddf0', fontSize: 14, lineHeight: 1.8, resize: 'vertical', minHeight: 440, boxSizing: 'border-box', outline: 'none' }} />
-          ) : (
-            <div style={{ padding: '60px 20px', textAlign: 'center' }}>
-              <div style={{ fontSize: 36, marginBottom: 12 }}>{loading ? '⏳' : '📚'}</div>
-              <p style={{ color: '#1c1830', fontSize: 13, lineHeight: 1.7, fontFamily: 'system-ui' }}>{loading ? 'Consulting the literary AI...' : 'Choose a tool and fill in details to get started.'}</p>
-            </div>
-          )}
         </div>
       </section>
-      <footer style={{ background: '#060410', borderTop: '1px solid rgba(139,92,246,0.07)', padding: '20px 24px', textAlign: 'center' }}>
-        <p style={{ color: '#110e1e', fontSize: 11, margin: 0, fontFamily: 'system-ui' }}>© 2026 CR AudioViz AI, LLC — EIN: 39-3646201 · Fort Myers, Florida · Your Story. Our Design.</p>
+
+      {result && (
+        <div style={{ maxWidth:800, margin:"32px auto", padding:"0 20px" }}>
+          <div style={{ background:"#0F1F32", border:"1px solid rgba(0,180,216,0.12)", borderRadius:14, padding:24 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <h3 style={{ margin:0, color:"#00B4D8", fontSize:15, fontWeight:700 }}>Your Outline</h3>
+              <button onClick={()=>navigator.clipboard?.writeText(result)}
+                style={{ background:"transparent", color:"#6B7280", border:"1px solid rgba(255,255,255,0.08)", borderRadius:6, padding:"4px 12px", fontSize:12, cursor:"pointer", fontFamily:"system-ui" }}>Copy</button>
+            </div>
+            <pre style={{ whiteSpace:"pre-wrap", wordBreak:"break-word", color:"#e2e8f0", fontSize:14, lineHeight:1.7, margin:0, fontFamily:"system-ui" }}>{result}</pre>
+          </div>
+        </div>
+      )}
+
+      <section style={{ maxWidth:960, margin:"0 auto", padding:"48px 20px 72px" }}>
+        <h2 style={{ textAlign:"center", fontSize:"clamp(18px,3vw,28px)", fontWeight:800, color:"#fff", margin:"0 0 32px" }}>All Writing Tools</h2>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))", gap:12 }}>
+          {TOOLS.map(t => (
+            <a key={t.href} href={t.href} style={{ background:"#0F1F32", border:"1px solid rgba(0,180,216,0.08)", borderRadius:14, padding:"20px 18px", textDecoration:"none", display:"block" }}>
+              <span style={{ fontSize:30, display:"block", marginBottom:8 }}>{t.icon}</span>
+              <div style={{ fontWeight:700, fontSize:14, color:"#e2e8f0", marginBottom:5 }}>{t.label}</div>
+              <div style={{ fontSize:12, color:"#6B7280", lineHeight:1.5 }}>{t.desc}</div>
+            </a>
+          ))}
+        </div>
+      </section>
+
+      <footer style={{ borderTop:"1px solid rgba(0,180,216,0.08)", padding:"14px 24px", textAlign:"center" }}>
+        <p style={{ color:"#374151", fontSize:11, margin:0 }}>© 2026 CR AudioViz AI, LLC — EIN: 39-3646201 · <a href="https://craudiovizai.com/auth/signup" style={{ color:"#FF0800", textDecoration:"none", fontWeight:600 }}>Sign Up Free</a></p>
       </footer>
     </div>
-  )
+  );
 }
